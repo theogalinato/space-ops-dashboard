@@ -18,30 +18,51 @@ Days 1–9 complete and committed/pushed:
   st.plotly_chart, orbital-param metrics
 * Day 9: app.py extended — search/filter, altitude + orbit-regime
   classification (LEO/MEO/GEO), TLE-age staleness warning (>3 days flagged)
+* Day 10: pass_prediction.py — topocentric rise/culminate/set for
+  RADARSAT-2 over Ottawa via Skyfield find_events + altaz. Verified
+  against live TLE: pass spacing matched ~100.7 min SSO period, duration
+  scaled with max elevation as expected.
+* Day 11: passes.py — generalized to five Canadian cities (Ottawa,
+  Halifax, Edmonton, Vancouver, Yellowknife). Wired into app.py as a
+  "Next Passes" section (city selectbox + N-passes slider + table).
+  Fixed a bug where app.py had its own separate Timescale object from
+  satellite_data.py's — now imports the shared `ts`.
+* Day 12: catalogue.py — integrated the Day 7 Canadian asset catalogue
+  CSV (9 satellites: RADARSAT-2, RCM-1/2/3, Sapphire, NEOSSat, SCISAT-1,
+  Anik F2/F3) as both a filterable table AND live-trackable satellites
+  (merged into the main selectbox/map/passes pool). Optimization: bulk
+  fetch via CelesTrak's "active" group before falling back to individual
+  CATNR queries.
 
 Real findings worth remembering:
-- RADARSAT-2 (CATNR 32382) is NOT in CelesTrak's "visual" group. Confirmed
-  via testing: RCM and Sapphire are ALSO likely absent from "visual" (not
-  yet verified for all three, but RADARSAT-2's absence + typical CelesTrak
-  curation makes it likely). get_satellite_by_catnr() has a fallback for
-  this: search a provided group first, else direct CATNR query.
-- RCM catalog numbers, confirmed via get_satellite_by_catnr(): RCM-1=44322,
-  RCM-2=44324, RCM-3=44323. NOT sequential with launch order — all three
-  launched together on one Falcon 9, catalog order != deployment order.
-- Watch for stale TLE propagation: SGP4 accuracy degrades fast past ~a
-  few days from TLE epoch. Now surfaced in the UI as a warning (Day 9).
-- .gitignore covers venv/, __pycache__/, *.tle, *.html, gp.php (TLE cache
-  files and Plotly HTML outputs are regenerable, never committed).
+- RADARSAT-2 + all 3 RCM satellites are NOT in CelesTrak's "active"
+  group (confirmed via cache file check: catnr_32382.tle, catnr_44322/
+  44323/44324.tle all had to be individually fetched). Sapphire, NEOSSat,
+  SCISAT-1, and both Aniks WERE in "active" (bulk-fetched, no individual
+  cache files needed). So the bulk-fetch optimization caught 5/9
+  satellites, cut network calls from 9 individual fetches down to
+  1 bulk + 4 individual fallbacks.
+- Data-quality bug caught and fixed: canadian_assets.csv had inconsistent
+  category tags ("Sci/Defence" on NEOSSat vs "Science" on SCISAT-1) --
+  same concept, different strings. Fixed the CSV to "Science/Defence".
+  Also had to fix the category filter logic itself: it was treating
+  compound tags like "EO/Defence" as one opaque string instead of
+  splitting on "/" and matching either component -- this was silently
+  hiding RCM-1/2/3 from an "EO"-only filter, which is exactly backwards
+  for what the catalogue is supposed to demonstrate.
+- Current files: satellite_data.py (TLE loading/orbital params, shared
+  ts), passes.py (five-city pass prediction), catalogue.py (catalogue
+  load + bulk/individual TLE fetch + merge into trackable list), app.py
+  (Streamlit UI tying all three together: search/select, map, passes,
+  catalogue table).
 
-KNOWN GAP going into today: the "visual" group app currently can't display
-Canadian defence/EO assets (RADARSAT-2, RCM, Sapphire) because they're not
-members of "visual." The catalogue CSV exists but isn't wired into the app
-yet — that's Day 12's job (integrate catalogue as filterable table), not
-today's. Flagging so it's not a surprise.
-
-Starting Day 10 now: Passes part 1 — learn find_events; compute rise/
-culminate/set times for one satellite over Ottawa. This is topocentric
-geometry (observer-relative), a new Skyfield concept vs. the geocentric
-subpoint work so far. Let's start with just one satellite (probably
-RADARSAT-2, given the Canadian focus) over Ottawa before generalizing to
-all five cities on Day 11.
+Starting Day 13 now: buffer/debug + layout cleanup (sidebar, tabs,
+captions). Known cleanup items going in:
+- app.py still has leftover "ADD #1/#2/#3" instructional comments from
+  earlier sessions -- these read as scaffolding, not documentation, and
+  should go before this looks like a finished file.
+- Everything is currently in one long vertical scroll (search -> metrics
+  -> map -> catalogue table -> passes). Worth deciding whether
+  sidebar/tabs actually improve this or just add complexity for its own
+  sake -- want your read on whether that's worth doing today or whether
+  today should just be a straight bug hunt instead.
