@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from satellite_data import ts, load_tle_group, compute_subpoints, compute_orbital_params
-from passes import get_next_n_passes, CITIES
+from passes import get_next_n_passes, get_static_visibility, CITIES, MIN_ELEVATION_DEG
 from catalogue import load_catalogue, get_catalogue_satellites, merge_satellite_lists
 import plotly.express as px
 
@@ -73,28 +73,38 @@ if age_days > 3:
 else:
     st.caption(f"TLE age: {age_days:.1f} days")
 
-# Map (unchanged from Day 8)
-df = compute_subpoints(satellites, t)
+# ============================================================
+# Day 13: three tabs instead of one long vertical scroll. Map/Catalogue/
+# Passes are logically separate operator questions ("where is it," "what
+# do we have," "when's it overhead") and don't need to share screen space
+# -- the search/select panel and metrics above stay outside the tabs since
+# they drive all three.
+# ============================================================
+map_tab, catalogue_tab, passes_tab = st.tabs(["Map", "Canadian Asset Catalogue", "Next Passes"])
 
-fig = px.scatter_geo(
-    df,
-    lat="latitude_deg",
-    lon="longitude_deg",
-    hover_name="name",
-    projection="natural earth",
-)
+with map_tab:
+    df = compute_subpoints(satellites, t)
 
-selected_row = df[df["name"] == selected_name]
-fig.add_scattergeo(
-    lat=selected_row["latitude_deg"],
-    lon=selected_row["longitude_deg"],
-    text=selected_row["name"],
-    mode="markers",
-    marker=dict(size=14, color="red"),
-    name="Selected",
-)
+    fig = px.scatter_geo(
+        df,
+        lat="latitude_deg",
+        lon="longitude_deg",
+        hover_name="name",
+        projection="natural earth",
+    )
 
-st.plotly_chart(fig, use_container_width=True)
+    selected_row = df[df["name"] == selected_name]
+    fig.add_scattergeo(
+        lat=selected_row["latitude_deg"],
+        lon=selected_row["longitude_deg"],
+        text=selected_row["name"],
+        mode="markers",
+        marker=dict(size=14, color="red"),
+        name="Selected",
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption(f"{len(satellites)} tracked objects: CelesTrak 'visual' group + the Canadian asset catalogue.")
 
 # ============================================================
 # Day 12: Canadian asset catalogue -- filterable reference table.
@@ -103,62 +113,83 @@ st.plotly_chart(fig, use_container_width=True)
 # hardcoded, so this doesn't silently break if a category is renamed
 # or a satellite is added/removed from the CSV later.
 # ============================================================
-st.divider()
-st.subheader("Canadian Asset Catalogue")
+with catalogue_tab:
+    categories = sorted({
+        c.strip()
+        for entry in catalogue_df["category"].dropna()
+        for c in entry.split("/")
+    })
+    selected_categories = st.multiselect(
+        "Filter by category", categories, default=categories
+    )
 
-categories = sorted({
-    c.strip()
-    for entry in catalogue_df["category"].dropna()
-    for c in entry.split("/")
-})
-selected_categories = st.multiselect(
-    "Filter by category", categories, default=categories
-)
+    def _row_matches_selected(entry: str, selected: list[str]) -> bool:
+        row_categories = {c.strip() for c in entry.split("/")}
+        return bool(row_categories & set(selected))
 
-def _row_matches_selected(entry: str, selected: list[str]) -> bool:
-    row_categories = {c.strip() for c in entry.split("/")}
-    return bool(row_categories & set(selected))
+    filtered_catalogue = catalogue_df[
+        catalogue_df["category"].apply(lambda x: _row_matches_selected(x, selected_categories))
+    ]
+    st.dataframe(filtered_catalogue, use_container_width=True, hide_index=True)
 
-filtered_catalogue = catalogue_df[
-    catalogue_df["category"].apply(lambda x: _row_matches_selected(x, selected_categories))
-]
-st.dataframe(filtered_catalogue, use_container_width=True, hide_index=True)
-
-st.caption(
-    "Sapphire is Canada's dedicated space-surveillance satellite -- "
-    "purpose-built to track objects in Earth orbit, distinct from the "
-    "Earth-observation (RADARSAT-2, RCM) and science (NEOSSat, SCISAT) "
-    "assets in this catalogue."
-)
+    st.caption(
+        "Sapphire is Canada's dedicated space-surveillance satellite -- "
+        "purpose-built to track objects in Earth orbit, distinct from the "
+        "Earth-observation (RADARSAT-2, RCM) and science (NEOSSat, SCISAT) "
+        "assets in this catalogue."
+    )
 
 # ============================================================
 # Day 11: Next-passes section for the currently selected satellite.
+# Day 13: GEO satellites (e.g. Anik F2/F3, merged in on Day 12) don't have
+# discrete passes -- they're roughly fixed relative to the ground, so
+# find_events() never sees a threshold crossing and get_next_n_passes()
+# correctly returns [] whether the satellite is continuously visible or
+# never visible from the site. Route GEO through get_static_visibility()
+# instead, which answers "which of those two is it" directly.
 # ============================================================
-st.divider()
-st.subheader("Next Passes")
+with passes_tab:
+    pass_col1, pass_col2 = st.columns([1, 1])
+    with pass_col1:
+        selected_city = st.selectbox("Site", list(CITIES.keys()))
+    with pass_col2:
+        n_passes = st.slider("Number of passes", min_value=1, max_value=10, value=5)
 
-pass_col1, pass_col2 = st.columns([1, 1])
-with pass_col1:
-    selected_city = st.selectbox("Site", list(CITIES.keys()))
-with pass_col2:
-    n_passes = st.slider("Number of passes", min_value=1, max_value=10, value=5)
+    if regime == "GEO":
+        vis = get_static_visibility(selected_sat, selected_city)
+        if vis["visible"]:
+            st.success(
+                f"{selected_sat.name} is geostationary -- continuously visible from "
+                f"{selected_city} at roughly {vis['elevation_deg']}\u00b0 elevation "
+                f"(azimuth {vis['azimuth_deg']}\u00b0). GEO satellites don't have "
+                f"discrete passes; this is a parked, roughly-constant view, not "
+                f"a live sighting."
+            )
+        else:
+            st.warning(
+                f"{selected_sat.name} is geostationary and sits at roughly "
+                f"{vis['elevation_deg']}\u00b0 elevation from {selected_city} -- below "
+                f"the {MIN_ELEVATION_DEG}\u00b0 usable threshold, and it will stay "
+                f"there. This isn't 'no passes yet' -- it's not reachable from "
+                f"this site at all, by geometry."
+            )
+    else:
+        city_passes = get_next_n_passes(selected_sat, selected_city, n=n_passes)
 
-city_passes = get_next_n_passes(selected_sat, selected_city, n=n_passes)
-
-if not city_passes:
-    st.info(
-        f"No passes above 10\u00b0 elevation for {selected_sat.name} "
-        f"over {selected_city} in the next 48h. This can be real geometry "
-        f"(orbit/site alignment), not necessarily a bug -- try a different "
-        f"satellite or city to sanity check."
-    )
-else:
-    passes_df = pd.DataFrame(city_passes)
-    passes_df = passes_df.rename(columns={
-        "rise_utc": "Rise (UTC)",
-        "set_utc": "Set (UTC)",
-        "duration_min": "Duration (min)",
-        "max_elevation_deg": "Max Elevation (deg)",
-        "culminate_azimuth_deg": "Azimuth @ Max El (deg)",
-    })
-    st.dataframe(passes_df, use_container_width=True, hide_index=True)
+        if not city_passes:
+            st.info(
+                f"No passes above {MIN_ELEVATION_DEG:.0f}\u00b0 elevation for "
+                f"{selected_sat.name} over {selected_city} in the next 48h. This "
+                f"can be real geometry (orbit/site alignment), not necessarily a "
+                f"bug -- try a different satellite or city to sanity check."
+            )
+        else:
+            passes_df = pd.DataFrame(city_passes)
+            passes_df = passes_df.rename(columns={
+                "rise_utc": "Rise (UTC)",
+                "set_utc": "Set (UTC)",
+                "duration_min": "Duration (min)",
+                "max_elevation_deg": "Max Elevation (deg)",
+                "culminate_azimuth_deg": "Azimuth @ Max El (deg)",
+            })
+            st.dataframe(passes_df, use_container_width=True, hide_index=True)

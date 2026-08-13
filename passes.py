@@ -93,10 +93,44 @@ def get_next_n_passes(sat, city: str, n: int = 5, hours_ahead: int = SEARCH_HOUR
     passes in 48h; that's real geometry, not a bug, and the caller (app.py)
     should be able to show "no passes in window" rather than the code
     silently expanding the search and hiding that fact.
+
+    Caveat (Day 13): this is a LEO-overflight concept -- it only means
+    something for a satellite whose elevation crosses the min_elevation
+    threshold. A GEO satellite is roughly fixed relative to the ground, so
+    it never crosses; this correctly returns [] whether the satellite is
+    continuously visible or never visible from `city`. Those are very
+    different operational facts wearing the same "no passes" empty list --
+    see get_static_visibility() for telling them apart. Callers (app.py)
+    should route GEO satellites there instead of here.
     """
     observer = get_observer(city)
     all_passes = get_passes(sat, observer, hours_ahead, min_elevation)
     return all_passes[:n]
+
+
+def get_static_visibility(sat, city: str, min_elevation: float = MIN_ELEVATION_DEG) -> dict:
+    """
+    For a satellite that doesn't meaningfully "pass" -- currently: GEO --
+    report its current elevation/azimuth over a city instead of searching
+    for rise/set crossings that will never happen.
+
+    get_next_n_passes() returning [] for a GEO satellite is CORRECT
+    (find_events finds no threshold crossings either way) but ambiguous:
+    it can't distinguish "continuously visible, nothing to report because
+    there's no discrete pass" from "never visible from this site, ever."
+    This function answers that directly with one snapshot instead of a
+    48h search, which is the right tool once you know the satellite isn't
+    doing LEO-style overflights.
+    """
+    observer = get_observer(city)
+    t = ts.now()
+    diff = sat - observer
+    alt, az, distance = diff.at(t).altaz()
+    return {
+        "elevation_deg": round(alt.degrees, 1),
+        "azimuth_deg": round(az.degrees, 1),
+        "visible": alt.degrees >= min_elevation,
+    }
 
 
 if __name__ == "__main__":
