@@ -3,6 +3,7 @@ import pandas as pd
 from satellite_data import ts, load_tle_group, compute_subpoints, compute_orbital_params
 from passes import get_next_n_passes, get_static_visibility, CITIES, MIN_ELEVATION_DEG
 from catalogue import load_catalogue, get_catalogue_satellites, merge_satellite_lists
+from space_weather import get_kp_index, get_xray_flux, get_solar_wind
 import plotly.express as px
 
 st.set_page_config(page_title="Space Operations Dashboard", layout="wide")
@@ -80,7 +81,9 @@ else:
 # -- the search/select panel and metrics above stay outside the tabs since
 # they drive all three.
 # ============================================================
-map_tab, catalogue_tab, passes_tab = st.tabs(["Map", "Canadian Asset Catalogue", "Next Passes"])
+map_tab, catalogue_tab, passes_tab, weather_tab = st.tabs(
+    ["Map", "Canadian Asset Catalogue", "Next Passes", "Space Weather"]
+)
 
 with map_tab:
     df = compute_subpoints(satellites, t)
@@ -193,3 +196,73 @@ with passes_tab:
                 "culminate_azimuth_deg": "Azimuth @ Max El (deg)",
             })
             st.dataframe(passes_df, use_container_width=True, hide_index=True)
+
+# ============================================================
+# Day 15: raw NOAA SWPC ingestion and display. Deliberately stops at
+# showing the numbers -- no LOW/MODERATE/HIGH classification (Day 16) and
+# no operational "so what" assessment (the protected Day 17 work). Pulling
+# either of those forward would mean redoing them properly in two days
+# anyway, so today just proves the data pipeline end to end.
+# ============================================================
+with weather_tab:
+    st.caption(
+        "Raw NOAA SWPC data. This tab shows current readings and a short "
+        "history only -- no status classification or operational "
+        "interpretation yet."
+    )
+
+    try:
+        kp_df = get_kp_index()
+        xray_df = get_xray_flux()
+        wind_df = get_solar_wind()
+    except Exception as exc:
+        st.error(
+            f"Could not reach NOAA SWPC: {exc}. This tab depends on live "
+            f"network access to services.swpc.noaa.gov; if this is a "
+            f"connectivity problem rather than a code problem, the rest of "
+            f"the app (Map/Catalogue/Next Passes) is unaffected since they "
+            f"talk to CelesTrak, a completely separate service."
+        )
+    else:
+        latest_kp = kp_df.iloc[-1]
+        latest_xray = xray_df.iloc[-1]
+        latest_wind = wind_df.iloc[-1]
+
+        weather_col1, weather_col2, weather_col3, weather_col4 = st.columns(4)
+        weather_col1.metric("Planetary Kp (estimated)", f"{latest_kp['estimated_kp']:.2f}")
+        weather_col2.metric("X-ray flare class", latest_xray["flare_class"])
+        weather_col3.metric("Solar wind speed", f"{latest_wind['proton_speed_km_s']:.0f} km/s")
+        weather_col4.metric("IMF Bz (GSM)", f"{latest_wind['bz_gsm_nt']:.1f} nT")
+
+        st.caption(
+            f"Kp as of {latest_kp['time_utc']:%Y-%m-%d %H:%M} UTC. "
+            f"X-ray as of {latest_xray['time_utc']:%Y-%m-%d %H:%M} UTC. "
+            f"Solar wind as of {latest_wind['time_utc']:%Y-%m-%d %H:%M} UTC."
+        )
+
+        st.subheader("Planetary Kp index")
+        st.line_chart(kp_df.set_index("time_utc")["estimated_kp"])
+
+        st.subheader("GOES X-ray flux, long channel (0.1-0.8nm)")
+        st.line_chart(xray_df.set_index("time_utc")["flux_w_m2"])
+        st.caption(
+            "Linear scale for Day 15. X-ray flux spans several orders of "
+            "magnitude across flare classes, so a log-scale axis will "
+            "likely read better once this tab gets more attention later; "
+            "flagged here rather than fixed today."
+        )
+
+        st.subheader("Solar wind speed")
+        st.line_chart(wind_df.set_index("time_utc")["proton_speed_km_s"])
+
+        st.subheader("Solar wind density")
+        st.line_chart(wind_df.set_index("time_utc")["proton_density_n_cm3"])
+
+        st.subheader("Interplanetary magnetic field, Bz (GSM)")
+        st.line_chart(wind_df.set_index("time_utc")["bz_gsm_nt"])
+        st.caption(
+            "Sustained negative (southward) Bz is what actually couples "
+            "solar wind energy into Earth's magnetosphere and drives "
+            "geomagnetic storms. Speed and density alone don't tell you "
+            "that; Bz direction does."
+        )
