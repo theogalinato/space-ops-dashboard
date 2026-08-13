@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from satellite_data import ts, load_tle_group, compute_subpoints, compute_orbital_params
 from passes import get_next_n_passes, CITIES
+from catalogue import load_catalogue, get_catalogue_satellites, merge_satellite_lists
 import plotly.express as px
 
 st.set_page_config(page_title="Space Operations Dashboard", layout="wide")
@@ -17,6 +18,14 @@ t = ts.now()
 
 # Load data
 satellites = load_tle_group("visual")
+
+# Day 12: merge in the 8 Canadian catalogue satellites so they're
+# selectable/trackable too (none are members of 'visual' -- confirmed).
+# Bulk-fetch via the 'active' group first (Optimization 1) rather than
+# 8 individual CATNR requests -- see catalogue.py for the fallback logic.
+catalogue_df = load_catalogue()
+catalogue_sats = get_catalogue_satellites(catalogue_df)
+satellites = merge_satellite_lists(satellites, catalogue_sats)
 
 
 def classify_orbit_regime(altitude_km: float) -> str:
@@ -86,6 +95,41 @@ fig.add_scattergeo(
 )
 
 st.plotly_chart(fig, use_container_width=True)
+
+# ============================================================
+# Day 12: Canadian asset catalogue -- filterable reference table.
+# Static curated data (Day 7 CSV), not live-computed. Filter options are
+# pulled from the data itself (df["category"].unique()) rather than
+# hardcoded, so this doesn't silently break if a category is renamed
+# or a satellite is added/removed from the CSV later.
+# ============================================================
+st.divider()
+st.subheader("Canadian Asset Catalogue")
+
+categories = sorted({
+    c.strip()
+    for entry in catalogue_df["category"].dropna()
+    for c in entry.split("/")
+})
+selected_categories = st.multiselect(
+    "Filter by category", categories, default=categories
+)
+
+def _row_matches_selected(entry: str, selected: list[str]) -> bool:
+    row_categories = {c.strip() for c in entry.split("/")}
+    return bool(row_categories & set(selected))
+
+filtered_catalogue = catalogue_df[
+    catalogue_df["category"].apply(lambda x: _row_matches_selected(x, selected_categories))
+]
+st.dataframe(filtered_catalogue, use_container_width=True, hide_index=True)
+
+st.caption(
+    "Sapphire is Canada's dedicated space-surveillance satellite -- "
+    "purpose-built to track objects in Earth orbit, distinct from the "
+    "Earth-observation (RADARSAT-2, RCM) and science (NEOSSat, SCISAT) "
+    "assets in this catalogue."
+)
 
 # ============================================================
 # Day 11: Next-passes section for the currently selected satellite.
