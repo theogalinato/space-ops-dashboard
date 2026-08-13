@@ -1,43 +1,30 @@
 """
 ground_track.py
 Day 5: Plot a satellite's ground track (subpoint path) over the next ~100 minutes.
+Day 6: refactored to use shared satellite_data.py module.
 """
-from skyfield.api import load, wgs84
+from skyfield.api import load
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import timedelta
+from satellite_data import get_satellite_by_catnr, compute_ground_track
 
 ts = load.timescale()
 now = ts.now()
 
 print("Fetching RADARSAT-2 TLE...")
-radarsat2 = load.tle_file(
-    "https://celestrak.org/NORAD/elements/gp.php?CATNR=32382&FORMAT=tle",
-    reload=False
-)[0]
+radarsat2 = get_satellite_by_catnr(32382, group="visual")
 print("Got RADARSAT-2")
 
-# --- Build a time series: now -> now + 100 minutes, one point per minute ---
+# --- Build ground track: now -> now + 100 minutes, one point per minute ---
 print("Propagating ground track...")
-minutes = range(0, 101)  # 0 to 100 inclusive
-times_list = [now.utc_datetime() + timedelta(minutes=m) for m in minutes]
-times = ts.from_datetimes(times_list)
-
-geocentric = radarsat2.at(times)
-subpoints = wgs84.subpoint(geocentric)
-
-df = pd.DataFrame({
-    "minute": list(minutes),
-    "lat": subpoints.latitude.degrees,
-    "lon": subpoints.longitude.degrees,
-})
+df = compute_ground_track(radarsat2, now, minutes=100, step_seconds=60)
 print(f"Computed {len(df)} track points")
 
 # --- Plot ---
 fig = go.Figure()
 
 fig.add_trace(go.Scattergeo(
-    lat=df["lat"], lon=df["lon"],
+    lat=df["latitude_deg"], lon=df["longitude_deg"],
     mode="markers+lines",
     line=dict(width=1, color="red"),
     marker=dict(size=3, color="red"),
@@ -46,7 +33,7 @@ fig.add_trace(go.Scattergeo(
 
 # Mark the starting point distinctly
 fig.add_trace(go.Scattergeo(
-    lat=[df["lat"][0]], lon=[df["lon"][0]],
+    lat=[df["latitude_deg"].iloc[0]], lon=[df["longitude_deg"].iloc[0]],
     mode="markers",
     marker=dict(size=10, color="black", symbol="star"),
     name="Now"
@@ -59,3 +46,5 @@ fig.update_layout(
 
 fig.write_html("ground_track.html")
 print("Wrote ground_track.html")
+from satellite_data import compute_orbital_params
+print(compute_orbital_params(radarsat2, now))
