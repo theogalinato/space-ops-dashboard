@@ -1,22 +1,24 @@
 import streamlit as st
-from skyfield.api import load
-from satellite_data import load_tle_group, compute_subpoints, compute_orbital_params
+import pandas as pd
+from satellite_data import ts, load_tle_group, compute_subpoints, compute_orbital_params
+from passes import get_next_n_passes, CITIES
 import plotly.express as px
 
 st.set_page_config(page_title="Space Operations Dashboard", layout="wide")
 st.title("Space Operations Dashboard")
 
-ts = load.timescale()
+# Day 11 fix: use the SAME Timescale object satellite_data.py and passes.py
+# already use, instead of creating a second one with load.timescale() here.
+# Two Timescale instances agree numerically (same leap-second data), so this
+# wasn't a correctness bug -- but it's two sources of "now" in one app, and
+# that's exactly the kind of inconsistency that bites later once Day 20
+# adds autorefresh/caching around time-dependent calls. One shared clock.
 t = ts.now()
 
 # Load data
 satellites = load_tle_group("visual")
 
-# ============================================================
-# ADD #1: the orbit-classification helper function.
-# Put it near the top, with your other function-like code —
-# right after the imports/setup, before it gets used below.
-# ============================================================
+
 def classify_orbit_regime(altitude_km: float) -> str:
     if altitude_km < 2000:
         return "LEO"
@@ -29,10 +31,6 @@ def classify_orbit_regime(altitude_km: float) -> str:
 # Dropdown of satellite names
 names = [sat.name for sat in satellites]
 
-# ============================================================
-# ADD #2: search box. This REPLACES your existing selectbox
-# block — don't add it alongside the old one, swap it in.
-# ============================================================
 search_term = st.text_input("Search satellites", "")
 if search_term:
     filtered_names = [n for n in names if search_term.lower() in n.lower()]
@@ -40,15 +38,11 @@ else:
     filtered_names = names
 if not filtered_names:
     st.warning(f"No satellites in the 'visual' group match '{search_term}'.")
-    st.stop()  # halts the script cleanly here instead of crashing further down
+    st.stop()
 
 selected_name = st.selectbox("Select a satellite", filtered_names)
 selected_sat = next(sat for sat in satellites if sat.name == selected_name)
 
-# ============================================================
-# ADD #3: this whole block REPLACES your existing info-panel
-# code (the st.write + col1/col2/col3 + metric calls from Day 8).
-# ============================================================
 st.write(f"Tracking: **{selected_sat.name}** (NORAD {selected_sat.model.satnum})")
 
 params = compute_orbital_params(selected_sat, t)
@@ -70,10 +64,7 @@ if age_days > 3:
 else:
     st.caption(f"TLE age: {age_days:.1f} days")
 
-# ============================================================
-# UNCHANGED: your map code from Day 8 stays exactly as-is,
-# below all of this.
-# ============================================================
+# Map (unchanged from Day 8)
 df = compute_subpoints(satellites, t)
 
 fig = px.scatter_geo(
@@ -95,3 +86,35 @@ fig.add_scattergeo(
 )
 
 st.plotly_chart(fig, use_container_width=True)
+
+# ============================================================
+# Day 11: Next-passes section for the currently selected satellite.
+# ============================================================
+st.divider()
+st.subheader("Next Passes")
+
+pass_col1, pass_col2 = st.columns([1, 1])
+with pass_col1:
+    selected_city = st.selectbox("Site", list(CITIES.keys()))
+with pass_col2:
+    n_passes = st.slider("Number of passes", min_value=1, max_value=10, value=5)
+
+city_passes = get_next_n_passes(selected_sat, selected_city, n=n_passes)
+
+if not city_passes:
+    st.info(
+        f"No passes above 10\u00b0 elevation for {selected_sat.name} "
+        f"over {selected_city} in the next 48h. This can be real geometry "
+        f"(orbit/site alignment), not necessarily a bug -- try a different "
+        f"satellite or city to sanity check."
+    )
+else:
+    passes_df = pd.DataFrame(city_passes)
+    passes_df = passes_df.rename(columns={
+        "rise_utc": "Rise (UTC)",
+        "set_utc": "Set (UTC)",
+        "duration_min": "Duration (min)",
+        "max_elevation_deg": "Max Elevation (deg)",
+        "culminate_azimuth_deg": "Azimuth @ Max El (deg)",
+    })
+    st.dataframe(passes_df, use_container_width=True, hide_index=True)
