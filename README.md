@@ -1,68 +1,78 @@
 ## Progress Log
 
-Continuing my Space Operations Dashboard project (see project instructions).
+This log tracks daily progress on the Space Operations Dashboard, a public data space domain awareness prototype built as a 28 day solo project. Each entry explains what was built that day, why it was built that way, and what problem (technical or operational) it solved. See the project instructions for the full schedule and scope.
 
-Days 1–9 complete and committed/pushed:
-* Day 1: iss_position.py — live single-satellite tracking (ISS)
-* Day 2–3: load_satellites.py — bulk load CelesTrak 'visual' group (157 sats),
-  dataframe with lat/lon/altitude/inclination_deg/period_min/speed_km_s
-* Day 4: plot_map.py — Plotly scattergeo map, RADARSAT-2 highlighted
-* Day 5: ground_track.py — RADARSAT-2 ground track, next 100 min
-* Day 6: refactored into satellite_data.py — shared module with
-  load_tle_group, get_satellite_by_catnr, compute_subpoints,
-  compute_ground_track, compute_orbital_params
-* Day 7: data/canadian_assets.csv — curated catalogue (RADARSAT-2, RCM-1/2/3,
-  Sapphire, NEOSSat, SCISAT-1, Anik F2/F3) with catnr/cospar_id/operator/
-  category/orbit_regime/altitude_km/inclination_deg/launch_date/status/purpose
-* Day 8: app.py — first Streamlit app, satellite selectbox, live map via
-  st.plotly_chart, orbital-param metrics
-* Day 9: app.py extended — search/filter, altitude + orbit-regime
-  classification (LEO/MEO/GEO), TLE-age staleness warning (>3 days flagged)
-* Day 10: pass_prediction.py — topocentric rise/culminate/set for
-  RADARSAT-2 over Ottawa via Skyfield find_events + altaz. Verified
-  against live TLE: pass spacing matched ~100.7 min SSO period, duration
-  scaled with max elevation as expected.
-* Day 11: passes.py — generalized to five Canadian cities (Ottawa,
-  Halifax, Edmonton, Vancouver, Yellowknife). Wired into app.py as a
-  "Next Passes" section (city selectbox + N-passes slider + table).
-  Fixed a bug where app.py had its own separate Timescale object from
-  satellite_data.py's — now imports the shared `ts`.
-* Day 12: catalogue.py — integrated the Day 7 Canadian asset catalogue
-  CSV (9 satellites: RADARSAT-2, RCM-1/2/3, Sapphire, NEOSSat, SCISAT-1,
-  Anik F2/F3) as both a filterable table AND live-trackable satellites
-  (merged into the main selectbox/map/passes pool). Optimization: bulk
-  fetch via CelesTrak's "active" group before falling back to individual
-  CATNR queries.
+Days 1 through 13 are complete and committed and pushed.
 
-Real findings worth remembering:
-- RADARSAT-2 + all 3 RCM satellites are NOT in CelesTrak's "active"
-  group (confirmed via cache file check: catnr_32382.tle, catnr_44322/
-  44323/44324.tle all had to be individually fetched). Sapphire, NEOSSat,
-  SCISAT-1, and both Aniks WERE in "active" (bulk-fetched, no individual
-  cache files needed). So the bulk-fetch optimization caught 5/9
-  satellites, cut network calls from 9 individual fetches down to
-  1 bulk + 4 individual fallbacks.
-- Data-quality bug caught and fixed: canadian_assets.csv had inconsistent
-  category tags ("Sci/Defence" on NEOSSat vs "Science" on SCISAT-1) --
-  same concept, different strings. Fixed the CSV to "Science/Defence".
-  Also had to fix the category filter logic itself: it was treating
-  compound tags like "EO/Defence" as one opaque string instead of
-  splitting on "/" and matching either component -- this was silently
-  hiding RCM-1/2/3 from an "EO"-only filter, which is exactly backwards
-  for what the catalogue is supposed to demonstrate.
-- Current files: satellite_data.py (TLE loading/orbital params, shared
-  ts), passes.py (five-city pass prediction), catalogue.py (catalogue
-  load + bulk/individual TLE fetch + merge into trackable list), app.py
-  (Streamlit UI tying all three together: search/select, map, passes,
-  catalogue table).
+### Day 1: First live satellite position
 
-Starting Day 13 now: buffer/debug + layout cleanup (sidebar, tabs,
-captions). Known cleanup items going in:
-- app.py still has leftover "ADD #1/#2/#3" instructional comments from
-  earlier sessions -- these read as scaffolding, not documentation, and
-  should go before this looks like a finished file.
-- Everything is currently in one long vertical scroll (search -> metrics
-  -> map -> catalogue table -> passes). Worth deciding whether
-  sidebar/tabs actually improve this or just add complexity for its own
-  sake -- want your read on whether that's worth doing today or whether
-  today should just be a straight bug hunt instead.
+`iss_position.py` loads the International Space Station's TLE (Two Line Element set, the standard format for describing a satellite's orbit) from CelesTrak's "stations" group, then uses Skyfield's timescale and `wgs84.subpoint` to print its current latitude, longitude, and altitude. This was the first working script in the project. It proved out the basic pipeline (fetch a TLE, propagate it to the current time, convert the result to a ground position) that every later feature builds on.
+
+### Day 2 and 3: Tracking many satellites at once
+
+`load_satellites.py` loads CelesTrak's "visual" group in bulk (157 satellites), then builds a Pandas dataframe with each satellite's subpoint (latitude, longitude, altitude), orbital inclination, orbital period, and instantaneous speed. This is where the project moved from tracking a single object to tracking a population, which is a prerequisite for the map, the catalogue, and the pass prediction features that came later.
+
+### Day 4: First map
+
+`plot_map.py` plots the subpoints of the full "visual" group on a Plotly `scattergeo` map, with RADARSAT-2 highlighted as a distinct marker. The goal was to confirm that a single Canadian asset could be visually picked out of a general population of tracked objects, since that distinction (this is one of ours, versus this is generic background traffic) is central to the operator use case the dashboard is meant to support.
+
+### Day 5: Ground tracks
+
+`ground_track.py` plots RADARSAT-2's ground track, meaning its path of subpoints over time rather than a single snapshot, across the next 100 minutes (roughly one full orbit). This required propagating the satellite across a time window instead of evaluating it at one instant, which is a different kind of calculation from Day 4's map.
+
+### Day 6: Refactor into a shared data module
+
+By Day 5, TLE loading and subpoint and orbital parameter logic was duplicated across several standalone scripts. Day 6 consolidated that logic into one shared module, `satellite_data.py`, exposing `load_tle_group`, `get_satellite_by_catnr`, `compute_subpoints`, `compute_ground_track`, and `compute_orbital_params`. Every script and app screen written after this point imports from `satellite_data.py` instead of re-deriving the same math. One lesson documented in this module: `get_satellite_by_catnr` falls back to fetching a satellite individually by its NORAD catalog number if it is not found in the group already loaded, because some assets (RADARSAT-2 among them) are not members of every named CelesTrak group.
+
+### Day 7: Seed the Canadian asset catalogue
+
+This day created `data/canadian_assets.csv`, a curated catalogue of nine Canadian space assets: RADARSAT-2, RCM-1, RCM-2, RCM-3, Sapphire, NEOSSat, SCISAT-1, Anik F2, and Anik F3. Each row records NORAD catalog number, COSPAR ID, operator, category, orbit regime, altitude, inclination, launch date, status, and purpose. This static reference data became the foundation for the catalogue feature integrated on Day 12.
+
+### Day 8: First Streamlit app
+
+This day wrapped the existing map in a minimal Streamlit web app, `app.py`, adding a dropdown (selectbox) to choose a satellite, a live map rendered with `st.plotly_chart`, and a first set of orbital parameter metrics displayed alongside it. This was the point where the project became an interactive dashboard rather than a collection of standalone scripts.
+
+### Day 9: Search, filtering, and staleness warnings
+
+`app.py` was extended with a text search box to filter the satellite dropdown by name, an altitude based classifier that labels each satellite's orbit regime as LEO, MEO, or GEO, and a staleness warning that flags a satellite's position as potentially degraded if its TLE is more than three days old. The staleness warning matters operationally: SGP4 propagation accuracy degrades the further you evaluate it past the TLE's own epoch, so a stale TLE is a real, visible caveat rather than a cosmetic detail.
+
+### Day 10: Pass prediction, part one
+
+`pass_prediction.py` computed topocentric rise, culminate, and set times for RADARSAT-2 over Ottawa, using Skyfield's `find_events` combined with altitude and azimuth (altaz) geometry. This is a different kind of calculation from the map and ground track work: it answers "when is this satellite visible from a specific point on the ground," rather than "where is this satellite right now." The result was checked against a live TLE: pass spacing matched RADARSAT-2's roughly 100.7 minute sun synchronous orbital period, and pass duration scaled with maximum elevation as the underlying geometry predicts.
+
+### Day 11: Pass prediction, part two
+
+Pass prediction was generalized from one hardcoded city into an importable module, `passes.py`, covering five Canadian cities: Ottawa, Halifax, Edmonton, Vancouver, and Yellowknife. This was wired into `app.py` as a "Next Passes" section with a city selector, a slider for how many passes to show, and a results table. This day also fixed a subtle inconsistency: `app.py` had been creating its own separate Skyfield `Timescale` object instead of using the one already shared by `satellite_data.py` and `passes.py`. This was not a correctness bug (two `Timescale` instances agree numerically, since they use the same leap second data), but it meant the app had two independent sources of "now" in one codebase, which is exactly the kind of inconsistency that could cause real problems once autorefresh and caching are introduced later in the project.
+
+### Day 12: Integrate the Canadian asset catalogue
+
+`catalogue.py` integrated the Day 7 catalogue CSV into the app in two ways: as a filterable reference table, and as a set of live, trackable satellites merged into the same selectable pool as the CelesTrak "visual" group. Fetching each of the nine catalogue satellites individually would mean nine separate network requests, so `catalogue.py` bulk fetches CelesTrak's "active" group first in a single request, and only falls back to an individual request for any satellite not found there. See Real Findings below for how much this actually saved and what data quality issue it surfaced.
+
+### Day 13: Buffer, debugging, and layout cleanup
+
+This was a scheduled buffer day, focused on cleanup rather than new features. `app.py` was restructured from one long vertical scroll of sections into three tabs (Map, Canadian Asset Catalogue, and Next Passes), with satellite search, selection, and orbital parameter metrics kept above the tabs since they drive the content shown in all three. A planned sidebar redesign was deliberately skipped to keep this a light cleanup day rather than a full interface rewrite; see Open Items below. While reviewing the code for this day, a real operational bug was caught and fixed. It is described in full under Real Findings.
+
+## Real Findings Worth Remembering
+
+**CelesTrak group membership is not consistent across satellites (Day 12).** RADARSAT-2 and all three RADARSAT Constellation Mission satellites are not members of CelesTrak's "active" group. This was confirmed directly by checking which local cache files were created: `catnr_32382.tle` (RADARSAT-2) and `catnr_44322.tle`, `catnr_44323.tle`, `catnr_44324.tle` (RCM-1, RCM-2, RCM-3) all had to be fetched individually. Sapphire, NEOSSat, SCISAT-1, and both Anik satellites were found in the "active" group and needed no individual fetch. In practice, the bulk fetch optimization described on Day 12 caught 5 of 9 catalogue satellites, reducing what would have been 9 individual network requests down to 1 bulk request plus 4 individual fallbacks.
+
+**A data quality bug in the catalogue, and a related bug in the filter logic (Day 12).** The catalogue CSV had inconsistent category tags for conceptually identical entries: NEOSSat was tagged "Sci/Defence" while SCISAT-1 was tagged "Science," two different strings for the same underlying concept. This was fixed by standardizing the CSV to "Science/Defence." A second, more consequential bug was found in the category filter itself: it was treating compound tags such as "EO/Defence" as one opaque string instead of splitting on the slash and matching either component. This silently hid RCM-1, RCM-2, and RCM-3 from an "EO" only filter selection, which is exactly backwards for a catalogue whose purpose is to make Canadian assets easy to find by category.
+
+**GEO satellites do not have discrete passes, and the app was not accounting for that (Day 13).** Anik F2 and Anik F3 are geostationary and were merged into the trackable satellite pool on Day 12. Pass prediction works by searching for the moments a satellite's elevation crosses a minimum threshold (rise and set). A geostationary satellite is roughly fixed relative to the ground, so it never crosses that threshold: `find_events` finds nothing either way. That means `get_next_n_passes` correctly returns an empty list for a GEO satellite, but an empty list is ambiguous. It looks identical whether the satellite is continuously visible or never visible at all from the selected site, and those are very different operational facts. The fix was a new function, `get_static_visibility`, added to `passes.py`. It reports current elevation and azimuth using the same `diff.at(t).altaz()` calculation already used elsewhere in `passes.py` to find a pass's maximum elevation, just evaluated at the current time instead of at a found event time. `app.py`'s Next Passes tab now checks the selected satellite's orbit regime: LEO and MEO satellites still use the normal pass table, while GEO satellites get a plain status message instead, either "continuously visible at approximately X degrees elevation" or "below the usable elevation threshold and not reachable from this site." This was verified interactively against Ottawa (where Anik F2 is visible) and Yellowknife (where it is not, which is expected, since the geostationary belt sits low on or below the horizon as seen from high latitude sites).
+
+## Current Architecture
+
+* `satellite_data.py`: shared TLE loading and orbital parameter calculations (`load_tle_group`, `get_satellite_by_catnr`, `compute_subpoints`, `compute_ground_track`, `compute_orbital_params`), plus the single shared Skyfield `Timescale` object (`ts`) used everywhere else in the app.
+* `passes.py`: pass prediction for five Canadian cities (`get_passes`, `get_next_n_passes`), plus `get_static_visibility` for satellites, such as GEO assets, that do not have discrete passes.
+* `catalogue.py`: loads the curated Canadian asset catalogue CSV and fetches live TLEs for those satellites, merging them into the same trackable pool used by the rest of the app.
+* `app.py`: the Streamlit application itself, organized into three tabs (Map, Canadian Asset Catalogue, Next Passes), with satellite search, selection, and orbital parameter metrics displayed above all three tabs since they drive what each tab shows.
+* `iss_position.py`, `load_satellites.py`, `plot_map.py`, `ground_track.py`, `pass_prediction.py`: the original Day 1, 2, 4, 5, and 10 standalone scripts. All of their logic has since been superseded by the shared modules above. They are being kept in place for now as a visible record of the project's build order; see Open Items below for the open question of whether to trim them.
+
+## Open Items, Carried Forward Rather Than Hidden
+
+* `pass_prediction.py` (Day 10) still duplicates `passes.py`'s `get_passes` function almost exactly. This is low stakes but undecided: keep it as a visible build history artifact, which is defensible for a portfolio repository meant to show progression over time, or trim the duplication now that `passes.py` fully supersedes it. The same question applies loosely to `iss_position.py`, `load_satellites.py`, `plot_map.py`, and `ground_track.py`.
+* A sidebar redesign was part of Day 13's original scope (sidebar, tabs, and captions) and was deliberately skipped. Adding tabs accomplished the main goal of breaking up the single long scroll without turning a scheduled buffer day into a full interface rewrite.
+
+## Next Up
+
+Day 14 is the project's midpoint checkpoint: an end to end test of the whole app, the first set of screenshots, and a commit marking the halfway point.
