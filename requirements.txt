@@ -1,0 +1,20 @@
+# Space Operations Dashboard -- Python dependencies.
+#
+# Only streamlit carries a version floor, and it's there for a specific
+# verified reason rather than as a guess: Day 20's live panels use
+# st.fragment(run_every=...), which became generally available in
+# Streamlit 1.37.0 (it existed earlier as st.experimental_fragment, from
+# 1.33). On anything older, app.py fails at import with an AttributeError
+# rather than degrading gracefully, so 1.37 is a hard floor.
+#
+# The rest are deliberately left unpinned. This project doesn't currently
+# depend on any version-specific behaviour in them, and inventing floors
+# that were never tested would be documentation that looks more rigorous
+# than it is.
+
+skyfield
+pandas
+plotly
+numpy
+requests
+streamlit>=1.37
