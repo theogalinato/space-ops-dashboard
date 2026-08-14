@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from satellite_data import ts, load_tle_group, compute_subpoints, compute_orbital_params
+from satellite_data import ts, load_tle_group, compute_subpoints, compute_orbital_params, classify_orbit_regime
 from passes import get_next_n_passes, get_static_visibility, CITIES, MIN_ELEVATION_DEG
 from catalogue import load_catalogue, get_catalogue_satellites, merge_satellite_lists
 from space_weather import get_kp_index, get_xray_flux, get_solar_wind
@@ -31,14 +31,9 @@ catalogue_sats = get_catalogue_satellites(catalogue_df)
 satellites = merge_satellite_lists(satellites, catalogue_sats)
 
 
-def classify_orbit_regime(altitude_km: float) -> str:
-    if altitude_km < 2000:
-        return "LEO"
-    elif altitude_km < 35000:
-        return "MEO"
-    else:
-        return "GEO"
-
+# Day 19: classify_orbit_regime moved to satellite_data.py so globe.py can
+# share the exact same LEO/MEO/GEO thresholds instead of a second copy
+# silently drifting from this one.
 
 # Dropdown of satellite names
 names = [sat.name for sat in satellites]

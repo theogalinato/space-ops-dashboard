@@ -117,6 +117,26 @@ def compute_subpoints(satellites: list[EarthSatellite], t) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _build_time_array(t0, minutes: float, step_seconds: int):
+    """
+    Shared by compute_ground_track and Day 19's compute_orbit_arc: build a
+    Skyfield time array spanning `minutes` starting at t0, one point every
+    step_seconds.
+
+    Builds it with ts.from_datetimes() over a list of Python datetimes --
+    NOT ts.utc() with a generator (Day 5 lesson: that raises a TypeError).
+    Pulled out on Day 19 so both functions share one implementation instead
+    of the same loop (and the same Day-5 lesson comment) living in two
+    places -- compute_orbit_arc needs the exact same time-array construction
+    compute_ground_track already had, just evaluated in a different frame
+    afterward.
+    """
+    n_steps = int((minutes * 60) / step_seconds) + 1
+    t0_dt = t0.utc_datetime()
+    datetimes = [t0_dt + timedelta(seconds=step_seconds * i) for i in range(n_steps)]
+    return ts.from_datetimes(datetimes), datetimes
+
+
 def compute_ground_track(
     sat: EarthSatellite, t0, minutes: int = 100, step_seconds: int = 60
 ) -> pd.DataFrame:
@@ -124,19 +144,14 @@ def compute_ground_track(
     Track: lat/lon/altitude for ONE satellite over a time WINDOW.
     This is the shape ground_track.py needs.
 
-    Builds the time array with ts.from_datetimes() over a list of Python
-    datetimes -- NOT ts.utc() with a generator (Day 5 lesson: that raises
-    a TypeError). Uses one vectorized sat.at(times) call rather than
-    looping per-timestep, which matters once you're doing this for
-    multiple satellites on Day 20's real-time view.
+    Uses one vectorized sat.at(times) call rather than looping per-timestep,
+    which matters once you're doing this for multiple satellites on Day
+    20's real-time view.
 
     Returns a DataFrame with columns: time_utc, latitude_deg,
     longitude_deg, altitude_km -- one row per timestep.
     """
-    n_steps = int((minutes * 60) / step_seconds) + 1
-    t0_dt = t0.utc_datetime()
-    datetimes = [t0_dt + timedelta(seconds=step_seconds * i) for i in range(n_steps)]
-    times = ts.from_datetimes(datetimes)
+    times, datetimes = _build_time_array(t0, minutes, step_seconds)
 
     geocentric = sat.at(times)
     subpoint = wgs84.subpoint(geocentric)
@@ -191,6 +206,78 @@ def compute_ecef_positions(satellites: list[EarthSatellite], t) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+def compute_orbit_arc(
+    sat: EarthSatellite, t0, minutes: float | None = None, step_seconds: int = 30
+) -> pd.DataFrame:
+    """
+    Day 19: ECEF x/y/z for ONE satellite traced over one orbital period --
+    the "orbit arc" for the 3D globe. The 3D-space counterpart to
+    compute_ground_track: same time-window idea (reuses
+    _build_time_array), but returns the satellite's own ECEF path through
+    space rather than its ground-projected subpoint.
+
+    minutes defaults to None, meaning "use this satellite's own orbital
+    period" (via compute_orbital_params) rather than a fixed window --
+    unlike compute_ground_track's fixed 100-minute default, one arc should
+    mean one full lap, and LEO (~90-100 min) and GEO (~1436 min) laps are
+    very different lengths. Pass an explicit minutes to override.
+
+    IMPORTANT frame note, easy to get backwards: this arc is computed in
+    ECEF (Earth-fixed), the SAME frame compute_ecef_positions() uses, on
+    purpose -- so it's consistent with the satellite dot and Earth mesh
+    already drawn in that frame in globe.py. That has a real, visible
+    consequence: in an INERTIAL frame, one orbital period traces a closed
+    ellipse (ignoring precession). In ECEF, it does NOT close, because the
+    Earth keeps rotating underneath the satellite for the whole period --
+    the same underlying effect that makes ground tracks drift westward
+    orbit over orbit (Day 5), just applied to the satellite's actual 3D
+    position instead of its ground-projected subpoint. For a LEO satellite
+    (~90 min, Earth rotates ~22.5 deg during one lap) this is a visibly
+    open spiral, not a closed loop -- that's correct, not a bug. For a GEO
+    satellite (period matches Earth's rotation almost exactly, by design)
+    the arc stays close to a single point instead of sweeping a big loop --
+    which is the same physical fact Day 13 already found the hard way
+    (GEO doesn't have discrete passes because it's roughly fixed relative
+    to the ground), just visible here as geometry instead of an empty pass
+    table. test_globe.py checks both shapes explicitly.
+
+    Returns a DataFrame with columns: time_utc, x_km, y_km, z_km.
+    """
+    if minutes is None:
+        minutes = compute_orbital_params(sat, t0)["period_min"]
+
+    times, datetimes = _build_time_array(t0, minutes, step_seconds)
+
+    geocentric = sat.at(times)
+    x, y, z = geocentric.frame_xyz(itrs).km
+
+    return pd.DataFrame(
+        {
+            "time_utc": datetimes,
+            "x_km": x,
+            "y_km": y,
+            "z_km": z,
+        }
+    )
+
+
+def classify_orbit_regime(altitude_km: float) -> str:
+    """
+    LEO / MEO / GEO classification by altitude. Moved here on Day 19 from
+    a copy that lived only in app.py -- globe.py now needs the exact same
+    classification (to color-code satellites by regime, since LEO and GEO
+    sit at wildly different scales on one 3D plot), and duplicating the
+    thresholds in two places risked them silently drifting apart. app.py
+    now imports this instead of defining its own.
+    """
+    if altitude_km < 2000:
+        return "LEO"
+    elif altitude_km < 35000:
+        return "MEO"
+    else:
+        return "GEO"
 
 
 def compute_orbital_params(sat: EarthSatellite, t) -> dict:
