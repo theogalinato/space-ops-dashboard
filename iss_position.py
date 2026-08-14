@@ -1,3 +1,16 @@
+"""
+Day 1 -- the first working script in this project.
+
+Loads the ISS's TLE from CelesTrak's "stations" group and prints its
+current latitude, longitude, and altitude. Proved out the basic pipeline
+(fetch a TLE, propagate to now, convert to a ground position) that every
+later feature builds on. Superseded by `satellite_data.py`'s
+`compute_subpoints()` (same math, generalized to many satellites and
+returned as a DataFrame instead of printed). Kept in place, unmodified,
+as a visible record of the project's build order -- see the README's
+"Open Items" section for the open question of whether to trim it.
+"""
+
 from skyfield.api import load, wgs84
 
 # --- 1. Load timescale (Skyfield's clock system) ---

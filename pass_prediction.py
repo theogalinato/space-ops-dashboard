@@ -69,6 +69,11 @@ def get_passes(sat, ts, observer, hours_ahead=SEARCH_HOURS, min_elevation=MIN_EL
 
 
 def main():
+    """Print RADARSAT-2's next passes over Ottawa to the console. Entry
+    point for running this script standalone (`python pass_prediction.py`);
+    superseded by `passes.py`'s `get_next_n_passes()`, which this module's
+    `get_passes()` duplicates almost exactly -- see the README's "Open
+    Items" section for the open question of whether to trim it."""
     sat = get_satellite_by_catnr(RADARSAT2_CATNR)
 
     print(f"Computing passes for {sat.name} over Ottawa, "

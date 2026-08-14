@@ -1,3 +1,37 @@
+"""
+Space Operations Dashboard -- Streamlit application.
+
+The single entry point that ties every math/data module in this project
+into one interactive tool: `streamlit run app.py`. Everything Streamlit-
+specific (page layout, caching, live-refresh fragments, tabs, widgets)
+lives in this file on purpose, so `satellite_data.py`, `catalogue.py`,
+`passes.py`, `space_weather.py`, `space_weather_status.py`,
+`operational_assessment.py`, and `conjunction.py` stay plain Python that
+knows nothing about Streamlit and can be imported and tested (or run
+standalone, like `globe.py`) with no Streamlit runtime involved.
+
+Five tabs, each answering a different operator question, in this order:
+Map (where are satellites right now, 2D or 3D), Canadian Asset Catalogue
+(what does Canada have up there), Next Passes (when is a satellite
+overhead a given site), Conjunction Screening (is a Canadian asset's
+neighbourhood clear, per the reduced screening heuristic -- see
+`conjunction.py`'s DISCLAIMER), and Space Weather (what's the current
+space environment and what does it mean operationally, per
+`operational_assessment.py`'s DISCLAIMER).
+
+Caching (`get_catalogue_df`, `get_earth_sphere`, `get_satellite_pool`,
+`get_space_weather_frames`) and the four live-refresh fragments
+(`live_orbital_metrics`, `live_map`, `live_globe`, `live_space_weather`)
+each run on their own display cadence, separate from how often the
+underlying data actually changes -- see the README's Day 20 entry for why
+that distinction matters and how the page-level clock is kept from
+freezing inside a fragment.
+
+This is a public-data educational prototype, not a real military,
+intelligence, or operational CAF/3 CSD system. See the README's honesty
+constraints and each tab's on-screen disclaimer for specifics.
+"""
+
 import streamlit as st
 import pandas as pd
 from satellite_data import (
@@ -775,6 +809,11 @@ with catalogue_tab:
     )
 
     def _row_matches_selected(entry: str, selected: list[str]) -> bool:
+        """True if a compound category tag (e.g. "EO/Defence") shares at
+        least one component with the selected filter categories. Splits on
+        "/" rather than treating the tag as one opaque string -- see the
+        Day 12 "Real Findings" entry in the README for the bug this fixed
+        (an "EO"-only filter was silently hiding every RCM satellite)."""
         row_categories = {c.strip() for c in entry.split("/")}
         return bool(row_categories & set(selected))
 

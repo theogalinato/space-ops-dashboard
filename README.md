@@ -1,8 +1,67 @@
+# Space Operations Dashboard
+
+A public-data space domain awareness tool: a Streamlit dashboard that turns live satellite tracking, pass prediction, space weather, a Canadian space-asset catalogue, and reduced conjunction screening into a single operator-facing view of "what is happening in the space domain right now, and how can someone reading this understand it quickly." Built as a 28-day solo project by a mechanical engineering student, to demonstrate space-operations thinking (data to system to environment to operational impact), not just coding.
+
+## What this is, and isn't
+
+This is a **public-data educational prototype**, built entirely from free, no-auth data sources (CelesTrak for orbital elements, NOAA SWPC for space weather). It is not a real military, intelligence, or operational CAF/3 Canadian Space Division system, and nothing on the dashboard, in this README, or in any accompanying report or presentation should be read as claiming otherwise.
+
+Two specific features carry their own limitations that are worth stating up front rather than leaving implicit:
+
+* **Conjunction screening** (`conjunction.py`, the Conjunction Screening tab) is a simplified screening heuristic on public two-line-element data, not a certified collision-probability (Pc) system. Public TLEs carry no usable covariance information, so a real Pc calculation is not possible from this data -- that is a fact about the input data, not a shortcoming of the code, and saying so explicitly is meant as a credibility feature. The tab exposes its own screening parameters (margin, time window, step size) as sliders specifically so the grid-sampling limitation (a fast, close crossing could fall entirely between two time samples) is demonstrable, not just asserted in disclaimer text.
+* **Space weather assessment** (`operational_assessment.py`, the Space Weather tab) is a simplified educational/operational assessment built from rule-based thresholds against NOAA's own published scales, not a real space-weather warning system.
+
+Both tabs carry an on-screen disclaimer restating this. See "Real Findings Worth Remembering" and "Open Items" below for the full, honest list of what this project does and doesn't handle.
+
+## Features
+
+* **Live satellite tracking** -- TLEs loaded and propagated with Skyfield/SGP4, subpoints plotted on a 2D map or a true-altitude 3D globe, with search/select and live altitude/inclination/period/speed.
+* **Next-pass prediction** -- rise/culminate/set times, duration, and max elevation for any tracked satellite over five Canadian sites (Ottawa, Halifax, Edmonton, Vancouver, Yellowknife), with a static-visibility fallback for GEO satellites that never cross the pass-detection threshold.
+* **Canadian asset catalogue** -- a curated, filterable table of Canadian space assets (RADARSAT-2, the RADARSAT Constellation Mission, Sapphire, NEOSSat, SCISAT, Anik/Telesat comms, and more), each with mission, operator, orbit, purpose, and launch date. Sapphire, Canada's dedicated space-surveillance satellite, is called out specifically.
+* **Space weather + operational assessment** -- NOAA SWPC data (Kp index, GOES X-ray flux, real-time solar wind) reduced to a LOW/MODERATE/HIGH status with a plain-language "so what" for GNSS, HF radio, and satellite operations.
+* **Reduced conjunction screening** -- pick any Canadian catalogue satellite as the primary asset, screen it against the full tracked population with an altitude-band filter followed by minimum-separation propagation, and get a worst-case risk banner plus a sortable results table.
+
+## Setup and running it
+
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+No API keys or accounts needed -- both CelesTrak and NOAA SWPC are free and unauthenticated. First launch fetches and locally caches TLE data; subsequent launches reuse the cache until it's cleared or explicitly reloaded. Requires Streamlit 1.37 or newer (see `requirements.txt` for why).
+
+## Architecture
+
+```mermaid
+graph TD
+    CT["CelesTrak<br/>(TLE data)"] --> SD["satellite_data.py<br/>TLE loading, SGP4 propagation,<br/>orbital params, ECI-to-ECEF"]
+    NOAA["NOAA SWPC<br/>(Kp, X-ray, solar wind)"] --> SW["space_weather.py<br/>SWPC ingestion"]
+
+    SD --> PA["passes.py<br/>next-pass prediction"]
+    SD --> CAT["catalogue.py<br/>Canadian asset catalogue"]
+    SD --> CJ["conjunction.py<br/>reduced conjunction screening"]
+    SW --> SWS["space_weather_status.py<br/>LOW / MODERATE / HIGH rules"]
+    SWS --> OA["operational_assessment.py<br/>'so what' engine (protected)"]
+    EM["earth_mesh.py<br/>Earth sphere geometry"]
+
+    SD --> APP
+    EM --> APP
+    PA --> APP
+    CAT --> APP
+    SWS --> APP
+    OA --> APP
+    CJ --> APP
+
+    APP["app.py -- Streamlit<br/>caching layer + 5 tabs"] --> USER["Operator / browser"]
+```
+
+Every module below `app.py` is plain Python with no Streamlit dependency, so each one can be imported, unit-tested (`test_*.py`), or run standalone (`globe.py`) with no Streamlit runtime involved. `app.py` is the only place that owns caching, live-refresh fragments, and page layout. See "Current Architecture" further down for a per-module description of what each file does and why it's shaped the way it is, and the Progress Log below for the day-by-day reasoning behind each design decision.
+
 ## Progress Log
 
 This log tracks daily progress on the Space Operations Dashboard, a public data space domain awareness prototype built as a 28 day solo project. Each entry explains what was built that day, why it was built that way, and what problem (technical or operational) it solved. See the project instructions for the full schedule and scope.
 
-Days 1 through 17 are complete. Day 17 is written and offline-tested; commit/push and live verification happen after review.
+Days 1 through 24 are complete, verified against live network access, committed, and pushed. Day 25 (this entry) covers polish: pulling the README into a coherent whole for a first-time reader, closing the remaining docstring gaps, and adding the architecture diagram above.
 
 ### Day 1: First live satellite position
 
@@ -192,6 +251,16 @@ One naming collision surfaced and got fixed on sight rather than left to bite la
 
 Verification: the full `bound_population()` -> `screen_conjunctions()` -> risk-label -> display-column-rename chain was exercised offline against Day 22/23's own test fixtures (a fresh script, not `test_conjunction.py` itself, since this is UI wiring in `app.py` rather than new orbital-mechanics logic) before touching the live app, confirming the exact lookup path `render_conjunction_tab()` uses -- catalogue name to catnr to `EarthSatellite`, survivor catnrs back to satellite objects, results DataFrame through the column rename -- runs end to end with no mismatch. Full existing test suite re-run clean alongside it, unaffected since no math changed today, only how it's called and displayed.
 
+### Day 25: polish -- README overhaul, docstring gaps closed, architecture diagram
+
+Per this project's own non-negotiable-days guardrail (Days 25-28 are not optional, a tool with no docs isn't a credible project). Three pieces, all documentation rather than new logic, so nothing here changes any module's behaviour or required re-running the test suite for math reasons -- it was re-run anyway, purely to confirm docstring-only edits hadn't broken an import.
+
+**README restructure.** Through Day 24 this file was a pure day-by-day progress log with no title, no project pitch, and no setup instructions -- useful as a build diary, but it meant a first-time reader (a recruiter, an AERE-stream reviewer, anyone landing on the repo cold) had to scroll past 24 days of entries before learning what the tool does or how to run it. Added, above the Progress Log: a title and one-paragraph pitch, an explicit "What this is, and isn't" section stating this project's honesty constraints in the reader's first screen rather than leaving them implicit in scattered disclaimers, a Features summary, a two-line Setup and running it block, and the architecture diagram below. The day-by-day log, Real Findings, per-module Current Architecture description, and Open Items all stay exactly as they were -- they're the detailed record for anyone who wants it, the new front matter is the fast path for anyone who doesn't need that depth yet.
+
+**Docstring gaps closed.** A sweep of every module (`ast.get_docstring` against every module, function, and class, not a manual skim that could miss one) found the codebase already in good shape -- Days 1 through 24 mostly wrote docstrings as they went, not as a Day-25 afterthought. What was actually missing: `app.py` itself had no module-level docstring despite every function inside it having one; the nested `_row_matches_selected()` helper (Day 12's category-filter fix) had no docstring; and the three earliest standalone scripts still without one were `iss_position.py` (Day 1), `load_satellites.py` (Days 2-3), and `pass_prediction.py`'s `main()` (Day 10). All five now have docstrings, each one explicitly naming which current module superseded it and pointing at the specific "Real Findings" or "Open Items" entry with the fuller story, rather than just restating what the code already says.
+
+**Architecture diagram.** A Mermaid diagram, embedded directly in this README so it renders natively on GitHub with no separate image file to keep in sync as modules change. It shows the two external data sources (CelesTrak, NOAA SWPC), which base modules each one feeds, which modules depend on which other modules (not just "everything imports into app.py," but the real internal shape: `passes.py`, `catalogue.py`, and `conjunction.py` all depend on `satellite_data.py`; `operational_assessment.py` depends on `space_weather_status.py`, which depends on `space_weather.py`), and how everything converges through `app.py`'s caching layer into the five tabs. Verified against each module's actual `import`/`from` lines rather than drawn from memory of how the project was supposed to be structured.
+
 ## Real Findings Worth Remembering
 
 **CelesTrak group membership is not consistent across satellites (Day 12).** RADARSAT-2 and all three RADARSAT Constellation Mission satellites are not members of CelesTrak's "active" group. This was confirmed directly by checking which local cache files were created: `catnr_32382.tle` (RADARSAT-2) and `catnr_44322.tle`, `catnr_44323.tle`, `catnr_44324.tle` (RCM-1, RCM-2, RCM-3) all had to be fetched individually. Sapphire, NEOSSat, SCISAT-1, and both Anik satellites were found in the "active" group and needed no individual fetch. In practice, the bulk fetch optimization described on Day 12 caught 5 of 9 catalogue satellites, reducing what would have been 9 individual network requests down to 1 bulk request plus 4 individual fallbacks.
@@ -241,4 +310,4 @@ Verification: the full `bound_population()` -> `screen_conjunctions()` -> risk-l
 
 ## Next Up
 
-Day 25: polish -- README with honest limitations (this document already carries most of that burden day-by-day; Day 25 is about pulling it into a coherent whole plus docstrings and an architecture diagram), per the project's own non-negotiable-days guardrail. The schedule past Day 25 changed after Day 24: Day 26 is now a dedicated UX/visual-design day rather than the technical report, and Day 27 carries the technical report instead of a presentation -- the presentation and rehearsal were cut from this project's scope entirely, not deferred. Day 28 remains final screenshots, a tagged GitHub release, and buffer.
+Day 26: a dedicated UX and visual-design day -- layout, hierarchy, color, and information density decisions for the dashboard, now that every planned feature is in. This is where the schedule changed after Day 24: Day 26 used to be the concise technical report, moved here in its place; Day 27 now carries the technical report instead of a presentation, and the presentation-plus-rehearsal deliverable was cut from this project's scope entirely, not deferred to later. Day 28 remains final screenshots, a tagged GitHub release, and buffer.
