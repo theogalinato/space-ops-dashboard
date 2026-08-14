@@ -14,9 +14,30 @@ from passes import get_next_n_passes, get_static_visibility, CITIES, MIN_ELEVATI
 from catalogue import load_catalogue, get_catalogue_satellites, merge_satellite_lists
 from space_weather import get_kp_index, get_xray_flux, get_solar_wind
 from space_weather_status import classify_geomagnetic_status, classify_radio_blackout_status
-from operational_assessment import assess_geomagnetic_impact, assess_radio_blackout_impact, DISCLAIMER
+from operational_assessment import (
+    assess_geomagnetic_impact,
+    assess_radio_blackout_impact,
+    DISCLAIMER as SPACE_WEATHER_DISCLAIMER,
+)
+from conjunction import (
+    bound_population,
+    screen_conjunctions,
+    DEFAULT_MARGIN_KM,
+    DEFAULT_WINDOW_HOURS,
+    DEFAULT_STEP_SECONDS,
+    HIGH_RISK_MAX_KM,
+    MODERATE_RISK_MAX_KM,
+    DISCLAIMER as CONJUNCTION_DISCLAIMER,
+)
 import plotly.express as px
 import plotly.graph_objects as go
+
+# Day 24: both operational_assessment.py and conjunction.py export their own
+# module-level DISCLAIMER constant (same pattern, deliberately -- see Day 17
+# and Day 23) -- imported above with distinct names rather than letting the
+# second import silently shadow the first, which would have been a subtle
+# bug (the Space Weather tab would start showing the conjunction-screening
+# disclaimer instead of its own).
 
 st.set_page_config(page_title="Space Operations Dashboard", layout="wide")
 st.title("Space Operations Dashboard")
@@ -60,6 +81,14 @@ TLE_TTL_SECONDS = 6 * 60 * 60      # CelesTrak republishes a few times daily
 SWPC_TTL_SECONDS = 60              # NOAA SWPC feeds update about once a minute
 POSITION_REFRESH_SECONDS = 10      # display cadence: live positions/metrics
 SWPC_REFRESH_SECONDS = 30          # display cadence: space weather panel
+
+# Day 16 originally, promoted to module level Day 24: a shared LOW/MODERATE/
+# HIGH -> Streamlit-banner-function mapping. Lived as a local inside
+# live_space_weather() until the Day 24 conjunction tab needed the exact
+# same three-way mapping for its own risk_level banner -- promoted rather
+# than copy-pasted, same instinct as Day 19's classify_orbit_regime and
+# Day 23's build_time_array promotions for the same reason.
+_STATUS_RENDER = {"LOW": st.success, "MODERATE": st.warning, "HIGH": st.error}
 
 
 # ------------------------------------------------------------
@@ -361,6 +390,126 @@ def live_globe(satellites, selected_sat, selected_name, regime_filter):
     )
 
 
+def render_conjunction_tab(satellites, catalogue_df, t_page):
+    """
+    Day 24: reduced conjunction screening, wired into the app for the first
+    time. Deliberately NOT an @st.fragment, unlike live_map/live_globe/
+    live_space_weather above -- same reasoning Day 20 already recorded for
+    passes_tab below: screening is comparatively expensive (propagating
+    every survivor over up to thousands of timesteps) and the answer
+    doesn't meaningfully change on a 10-second cadence the way a live
+    position does. This recomputes when the user changes the primary
+    satellite or a screening parameter -- which is when the answer can
+    actually differ -- not on a timer. It reuses t_page (computed once at
+    page level, same clock as the TLE-age check above) rather than calling
+    ts.now() itself, since there's no fragment boundary here for a frozen
+    page-level timestamp to be a problem across.
+
+    Primary choices are restricted to the Canadian catalogue, not the full
+    ~170-object tracked population: conjunction.py's own framing is "a
+    PRIMARY satellite (a Canadian asset worth protecting)," and this UI
+    holds to that rather than offering every tracked object as a possible
+    primary, most of which aren't Canadian assets this project has any
+    stake in protecting. The candidate POPULATION being screened against,
+    on the other hand, is still the full tracked pool -- a conjunction
+    doesn't care whether the other object is Canadian.
+    """
+    st.caption(CONJUNCTION_DISCLAIMER)
+
+    primary_name = st.selectbox(
+        "Primary asset (the Canadian satellite being screened)",
+        catalogue_df["name"].tolist(),
+        help=(
+            "Screening runs Day 22's altitude-band filter, then Day 23's "
+            "propagated minimum-separation search, against every other "
+            "object in the tracked population."
+        ),
+    )
+    primary_catnr = int(catalogue_df.loc[catalogue_df["name"] == primary_name, "catnr"].iloc[0])
+    primary_sat = next(sat for sat in satellites if sat.model.satnum == primary_catnr)
+
+    with st.expander("Screening parameters (advanced)"):
+        st.caption(
+            "These are heuristic knobs, not physical constants -- adjusting "
+            "them changes what this tool flags, not what's actually true in "
+            "orbit. In particular, try widening the time-grid step on a "
+            "close result: a fast-crossing pair's reported minimum can "
+            "visibly shift between step sizes -- that's the grid-sampling "
+            "limitation in the disclaimer above showing up directly, not a "
+            "bug."
+        )
+        margin_km = st.slider(
+            "Day 22 altitude-band margin (km)",
+            min_value=0, max_value=200, value=int(DEFAULT_MARGIN_KM), step=5,
+            help="How far outside the primary's own altitude band a candidate can sit and still be screened.",
+        )
+        window_hours = st.slider(
+            "Day 23 look-ahead window (hours)",
+            min_value=1, max_value=72, value=int(DEFAULT_WINDOW_HOURS),
+            help="How far forward in time to search for a close approach. Longer windows compound TLE staleness.",
+        )
+        step_seconds = st.select_slider(
+            "Day 23 time-grid step (seconds)",
+            options=[5, 10, 30, 60, 120, 300], value=DEFAULT_STEP_SECONDS,
+            help="Finer steps catch faster/closer approaches but cost more compute -- see the grid-sampling limitation above.",
+        )
+
+    survivors_df = bound_population(primary_sat, satellites, margin_km=margin_km)
+
+    if survivors_df.empty:
+        st.info(
+            f"No tracked objects fall within {margin_km:.0f} km of "
+            f"{primary_name}'s altitude band. This is a legitimate result, "
+            f"not an error -- {primary_name} simply has no altitude "
+            f"neighbours in the current tracked population at this margin."
+        )
+        return
+
+    survivor_catnrs = set(survivors_df["catnr"])
+    survivor_sats = [sat for sat in satellites if sat.model.satnum in survivor_catnrs]
+
+    results_df = screen_conjunctions(
+        primary_sat, survivor_sats, t_page,
+        window_hours=window_hours, step_seconds=step_seconds,
+    )
+
+    # Results are already sorted ascending by min_separation_km (see
+    # screen_conjunctions' docstring) -- row 0 is the most concerning.
+    worst = results_df.iloc[0]
+    _STATUS_RENDER[worst["risk_level"]](
+        f"Closest predicted approach: **{worst['name']}** at "
+        f"{worst['min_separation_km']:.2f} km on "
+        f"{worst['time_of_closest_approach_utc']:%Y-%m-%d %H:%M} UTC -- "
+        f"{worst['risk_level']}"
+    )
+
+    counts = results_df["risk_level"].value_counts()
+    count_col1, count_col2, count_col3 = st.columns(3)
+    count_col1.metric("HIGH", int(counts.get("HIGH", 0)))
+    count_col2.metric("MODERATE", int(counts.get("MODERATE", 0)))
+    count_col3.metric("LOW", int(counts.get("LOW", 0)))
+
+    display_df = results_df.rename(columns={
+        "name": "Object",
+        "catnr": "NORAD Catalog #",
+        "min_separation_km": "Min Separation (km)",
+        "time_of_closest_approach_utc": "Time of Closest Approach (UTC)",
+        "risk_level": "Risk Level",
+    })
+    st.dataframe(display_df, hide_index=True)
+
+    st.caption(
+        f"{len(survivors_df)} of {len(satellites)} tracked objects survived "
+        f"the Day 22 altitude-band filter (±{margin_km:.0f} km of "
+        f"{primary_name}'s band); all {len(results_df)} were propagated over "
+        f"{window_hours:.0f}h at a {step_seconds}s step and classified. "
+        f"Screening evaluated as of {t_page.utc_strftime('%Y-%m-%d %H:%M:%S')} "
+        f"UTC. Risk bands: HIGH < {HIGH_RISK_MAX_KM:.0f} km, MODERATE "
+        f"{HIGH_RISK_MAX_KM:.0f}–{MODERATE_RISK_MAX_KM:.0f} km, LOW "
+        f"≥ {MODERATE_RISK_MAX_KM:.0f} km."
+    )
+
+
 @st.fragment(run_every=SWPC_REFRESH_SECONDS)
 def live_space_weather():
     """
@@ -409,7 +558,6 @@ def live_space_weather():
     geomag_status = classify_geomagnetic_status(latest_kp["estimated_kp"])
     blackout_status = classify_radio_blackout_status(latest_xray["flare_class"])
 
-    _STATUS_RENDER = {"LOW": st.success, "MODERATE": st.warning, "HIGH": st.error}
     banner_col1, banner_col2 = st.columns(2)
     with banner_col1:
         _STATUS_RENDER[geomag_status.level](
@@ -427,7 +575,7 @@ def live_space_weather():
     # the supporting data second, rather than having to read numbers
     # before getting to what they mean.
     st.subheader('Operational Impact ("so what?")')
-    st.caption(DISCLAIMER)
+    st.caption(SPACE_WEATHER_DISCLAIMER)
     geomag_impact = assess_geomagnetic_impact(geomag_status)
     blackout_impact = assess_radio_blackout_impact(blackout_status)
     impact_col1, impact_col2 = st.columns(2)
@@ -555,14 +703,19 @@ else:
     st.caption(f"TLE age: {age_days:.1f} days")
 
 # ============================================================
-# Day 13: four tabs instead of one long vertical scroll. Map/Catalogue/
-# Passes are logically separate operator questions ("where is it," "what
-# do we have," "when's it overhead") and don't need to share screen space
-# -- the search/select panel and metrics above stay outside the tabs since
-# they drive all of them.
+# Day 13: separate tabs instead of one long vertical scroll. Map/Catalogue/
+# Passes/Conjunction are logically separate operator questions ("where is
+# it," "what do we have," "when's it overhead," "is anything too close to
+# it") and don't need to share screen space -- the search/select panel and
+# metrics above stay outside the tabs since they drive all of them.
+# Day 24: Conjunction Screening added as its own tab, placed right after
+# Next Passes rather than at the end -- it continues the same asset-focused
+# question sequence (where/what/when/is-it-safe) that Map through Passes
+# already builds, while Space Weather is a separate environmental-awareness
+# question that reads naturally as the last stop.
 # ============================================================
-map_tab, catalogue_tab, passes_tab, weather_tab = st.tabs(
-    ["Map", "Canadian Asset Catalogue", "Next Passes", "Space Weather"]
+map_tab, catalogue_tab, passes_tab, conjunction_tab, weather_tab = st.tabs(
+    ["Map", "Canadian Asset Catalogue", "Next Passes", "Conjunction Screening", "Space Weather"]
 )
 
 with map_tab:
@@ -695,6 +848,15 @@ with passes_tab:
                 "culminate_azimuth_deg": "Azimuth @ Max El (deg)",
             })
             st.dataframe(passes_df, hide_index=True)
+
+# ============================================================
+# Day 24: reduced conjunction screening. The full pipeline built across
+# Days 22-23 (bound_population -> screen_conjunctions -> classify) gets a
+# UI for the first time here -- see render_conjunction_tab's docstring
+# above for why this is deliberately NOT a refresh fragment.
+# ============================================================
+with conjunction_tab:
+    render_conjunction_tab(satellites, catalogue_df, t_page)
 
 # ============================================================
 # Day 15: raw NOAA SWPC ingestion and display.
