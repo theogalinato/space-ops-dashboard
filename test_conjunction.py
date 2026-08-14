@@ -1,13 +1,22 @@
 """
-Offline sanity test for Day 22's conjunction.py -- compute_altitude_band()
-and bound_population(). Same hardcoded-TLE approach as every other test_*.py
-in this project, since this sandbox can't reach celestrak.org. No propagation
-happens in conjunction.py yet (that's Day 23), so unlike test_globe.py this
-test doesn't need to worry about epoch-vs-now propagation error at all --
-altp/alta come straight from each TLE's mean elements, evaluated once,
-independent of time.
+Offline sanity test for conjunction.py, covering both days' work.
 
-Six synthetic fixtures, all clearly labeled "(TEST FIXTURE)" and none
+Day 22 section: compute_altitude_band() and bound_population() -- no
+propagation involved at all, so unlike test_globe.py this doesn't need to
+worry about epoch-vs-now propagation error. altp/alta come straight from
+each TLE's mean elements, evaluated once, independent of time.
+
+Day 23 section: compute_min_separation(), classify_conjunction_risk(), and
+screen_conjunctions() -- these DO propagate, over a hardcoded time window
+starting at each fixture's own TLE epoch (never "now"), same reasoning
+test_globe.py already established for why epoch, not now: SGP4 accuracy
+degrades the further you propagate past epoch, so pinning to epoch keeps
+this test's numbers exact and reproducible regardless of when it's run.
+
+Same hardcoded/synthetic-TLE approach as every other test_*.py in this
+project, since this sandbox can't reach celestrak.org.
+
+Six Day 22 fixtures, all clearly labeled "(TEST FIXTURE)" and none
 resembling a real NORAD catalog number, generated to hit specific known
 perigee/apogee values (see the comment above each block for the math). SGP4's
 Kozai-to-Brouwer mean-motion conversion shifts the actual perigee/apogee a
@@ -17,10 +26,23 @@ asserted below are the REAL sat.model.altp/.alta output, confirmed once by
 hand and hardcoded here, not the original targets.
 """
 
+from datetime import timedelta
+
+import numpy as np
 import pandas as pd
 from skyfield.api import EarthSatellite, load
 
-from conjunction import compute_altitude_band, bound_population, DEFAULT_MARGIN_KM
+from conjunction import (
+    compute_altitude_band,
+    bound_population,
+    compute_min_separation,
+    classify_conjunction_risk,
+    screen_conjunctions,
+    DEFAULT_MARGIN_KM,
+    HIGH_RISK_MAX_KM,
+    MODERATE_RISK_MAX_KM,
+)
+from satellite_data import build_time_array
 
 ts = load.timescale()
 
@@ -161,5 +183,192 @@ assert isinstance(empty_survivors, pd.DataFrame)
 assert list(empty_survivors.columns) == ["name", "catnr", "perigee_km", "apogee_km"]
 assert len(empty_survivors) == 0
 print("  PASS: an empty candidate population returns an empty, correctly-shaped DataFrame\n")
+
+
+# ============================================================
+# Day 23 fixtures: PRIMARY-700-CIRC (reused exactly as above) plus three new
+# "phase-offset" satellites -- IDENTICAL orbit to the primary (same a, e, i,
+# RAAN, argument of perigee) but shifted by a small mean anomaly. Two
+# satellites on the same physical orbit, just offset in where they sit along
+# it, stay NEAR-constant chord distance apart at all times (approximately
+# 2r*sin(dM/2), r the orbital radius, dM the mean-anomaly offset in radians).
+#
+# "Near", not exactly, constant turned out to matter and is worth recording
+# rather than glossing over: a first pass at this test compared the grid-
+# search minimum against the separation measured at a single instant (TLE
+# epoch) and found a real ~0.02 km gap, not floating-point noise. The cause:
+# the mean-anomaly offset keeps the two satellites' MEAN position constantly
+# offset by construction, but SGP4's short-period J2 correction terms depend
+# on where each satellite actually is along its orbit at a given moment --
+# and since the two are always at DIFFERENT points along an identical orbit
+# shape, those short-period corrections don't cancel between them the way
+# the mean-motion terms do. The result is a small, genuine periodic wobble
+# in true separation (confirmed stable across step=5s/60s/300s below, so
+# it's real signal, not sampling noise) rather than a perfectly flat line.
+# The values asserted below are therefore the actual grid-search minimum
+# over the test's own 24h/60s window, not the single-instant approximation
+# -- what the function under test actually and correctly returns, not what
+# a simpler mental model predicts.
+# ============================================================
+t0 = primary.epoch
+pos0_km = primary.at(t0).position.km
+
+def _make_phase_offset(catnr, ma_deg, label):
+    def checksum(line68):
+        total = 0
+        for ch in line68:
+            if ch.isdigit():
+                total += int(ch)
+            elif ch == '-':
+                total += 1
+        return total % 10
+    l1 = f"1 {catnr:05d}U 98067A   24079.51782528  .00000000  00000-0  00000-0 0  999"
+    l1 = l1 + str(checksum(l1))
+    l2_body = f"2 {catnr:05d}  98.6000 100.0000 0000000   0.0000 {ma_deg:8.4f} 14.57889136    1"
+    l2 = l2_body + str(checksum(l2_body))
+    return EarthSatellite(l1, l2, label, ts)
+
+# Mean-anomaly offsets chosen to land one grid-search minimum in each risk
+# band (values below are the actual 24h/60s grid-search result, confirmed
+# stable across step sizes in the next block -- see fixture comment above
+# for why this is the grid minimum, not the naive single-instant estimate).
+phase_high = _make_phase_offset(99011, 0.0041, "PHASE-HIGH (TEST FIXTURE)")      # 0.5059 km -> HIGH
+phase_moderate = _make_phase_offset(99012, 0.0200, "PHASE-MODERATE (TEST FIXTURE)")  # 2.4676 km -> MODERATE
+phase_low = _make_phase_offset(99013, 0.1000, "PHASE-LOW (TEST FIXTURE)")        # 12.3380 km -> LOW
+
+print("=== compute_min_separation: near-constant-separation co-orbital fixtures ===")
+window_hours = 24.0
+times, _ = build_time_array(t0, window_hours * 60, 60)
+for cand, expected_km, label in [
+    (phase_high, 0.5059, "HIGH-band"),
+    (phase_moderate, 2.4676, "MODERATE-band"),
+    (phase_low, 12.3380, "LOW-band"),
+]:
+    min_km, t_at = compute_min_separation(primary, cand, times)
+    assert abs(min_km - expected_km) < 0.005, (
+        f"{cand.name}: measured {min_km:.4f} km, expected ~{expected_km} km"
+    )
+    print(f"  {label:14s} {cand.name:36s} min_separation={min_km:.4f} km at {t_at}")
+print("  PASS: all three co-orbital fixtures land within 0.005 km of their pre-verified grid-search minimum\n")
+
+print("=== compute_min_separation: this near-constant-separation case is grid-independent ===")
+# A useful cross-check precisely BECAUSE these fixtures have near-constant,
+# not sharply time-varying, separation: the reported minimum should come out
+# the same regardless of step size, since the small periodic wobble
+# described above is slow relative to any of these step sizes -- there's no
+# "in between the samples" that a coarser grid could miss here. This is a
+# property of THESE fixtures, not a general claim that grid size never
+# matters -- see the dedicated grid-resolution section further down for a
+# case with genuinely time-varying separation.
+times_coarse, _ = build_time_array(t0, window_hours * 60, 300)
+times_fine, _ = build_time_array(t0, window_hours * 60, 5)
+min_coarse, _ = compute_min_separation(primary, phase_moderate, times_coarse)
+min_fine, _ = compute_min_separation(primary, phase_moderate, times_fine)
+assert abs(min_coarse - min_fine) < 0.005, (
+    f"near-constant-separation fixture should agree regardless of step size: "
+    f"coarse={min_coarse:.4f} km, fine={min_fine:.4f} km"
+)
+print(f"  PASS: 300s-step ({min_coarse:.4f} km) and 5s-step ({min_fine:.4f} km) agree for a near-constant-separation pair\n")
+
+print("=== classify_conjunction_risk: bands and their exact boundaries ===")
+assert classify_conjunction_risk(0.5) == "HIGH"
+assert classify_conjunction_risk(0.999) == "HIGH"
+assert classify_conjunction_risk(HIGH_RISK_MAX_KM) == "MODERATE"  # 1.0 km exactly -- inclusive on the safer side
+assert classify_conjunction_risk(1.001) == "MODERATE"
+assert classify_conjunction_risk(3.0) == "MODERATE"
+assert classify_conjunction_risk(4.999) == "MODERATE"
+assert classify_conjunction_risk(MODERATE_RISK_MAX_KM) == "LOW"  # 5.0 km exactly -- inclusive on the safer side
+assert classify_conjunction_risk(5.001) == "LOW"
+assert classify_conjunction_risk(500.0) == "LOW"
+print("  PASS: HIGH < 1.0 km, MODERATE [1.0, 5.0) km, LOW >= 5.0 km, boundaries land on the safer band\n")
+
+print("=== screen_conjunctions: batched result matches per-pair compute_min_separation ===")
+candidates = [phase_high, phase_moderate, phase_low, cand_far]  # cand_far reused from Day 22 (far outside)
+results = screen_conjunctions(primary, candidates, t0, window_hours=24.0, step_seconds=60)
+
+assert list(results.columns) == [
+    "name", "catnr", "min_separation_km", "time_of_closest_approach_utc", "risk_level"
+]
+assert len(results) == len(candidates), "one row per candidate expected"
+assert primary.name not in set(results["name"]), "primary must never appear in its own results"
+
+# Self-consistency: every row's risk_level must match classify_conjunction_risk
+# applied independently to that same row's min_separation_km.
+for _, row in results.iterrows():
+    assert row["risk_level"] == classify_conjunction_risk(row["min_separation_km"]), (
+        f"{row['name']}: risk_level {row['risk_level']} doesn't match its own "
+        f"min_separation_km {row['min_separation_km']:.4f}"
+    )
+
+# Sorted ascending by min_separation_km -- most concerning candidate first.
+assert list(results["min_separation_km"]) == sorted(results["min_separation_km"]), (
+    "results should be sorted by min_separation_km ascending"
+)
+assert results.iloc[0]["name"] == phase_high.name, "PHASE-HIGH should be the top (most concerning) row"
+
+risk_by_name = dict(zip(results["name"], results["risk_level"]))
+assert risk_by_name[phase_high.name] == "HIGH"
+assert risk_by_name[phase_moderate.name] == "MODERATE"
+assert risk_by_name[phase_low.name] == "LOW"
+assert risk_by_name[cand_far.name] == "LOW"
+print(f"  PASS: {len(results)} candidates screened, correctly sorted, self-consistent risk labels, "
+      f"top row is {results.iloc[0]['name']} at {results.iloc[0]['min_separation_km']:.4f} km\n")
+
+print("=== screen_conjunctions: empty candidate list is a valid outcome ===")
+empty_results = screen_conjunctions(primary, [], t0)
+assert isinstance(empty_results, pd.DataFrame)
+assert len(empty_results) == 0
+assert list(empty_results.columns) == [
+    "name", "catnr", "min_separation_km", "time_of_closest_approach_utc", "risk_level"
+]
+print("  PASS: an empty candidate list returns an empty, correctly-shaped DataFrame\n")
+
+print("=== grid resolution: a finer grid's minimum is never LARGER than a coarser grid's ===")
+# Proof of the property compute_min_separation()'s docstring claims, using a
+# pair with REAL time-varying separation (not the constant-separation phase
+# fixtures above) -- two coplanar circular orbits at different altitudes
+# (Day 22's PRIMARY-700-CIRC and CAND-IN-660-CIRC), whose separation
+# genuinely drifts over the window as their different periods carry them in
+# and out of alignment. step=60s and step=6s are constructed so every
+# coarse-grid sample time is ALSO a fine-grid sample time (6 divides 60,
+# same t0) -- so the fine grid evaluates a strict SUPERSET of the instants
+# the coarse grid does, and its minimum over that superset can only be
+# less-than-or-equal-to the coarse grid's, never greater, by construction.
+times_60s, _ = build_time_array(t0, window_hours * 60, 60)
+times_6s, _ = build_time_array(t0, window_hours * 60, 6)
+min_60s, _ = compute_min_separation(primary, cand_in, times_60s)
+min_6s, _ = compute_min_separation(primary, cand_in, times_6s)
+assert min_6s <= min_60s, (
+    f"a finer grid (superset of the coarser grid's sample times) must find a "
+    f"minimum <= the coarser grid's: got 6s={min_6s:.4f} km, 60s={min_60s:.4f} km"
+)
+print(f"  PASS: 60s-step found {min_60s:.4f} km, 6s-step found {min_6s:.4f} km ({min_60s - min_6s:.4f} km "
+      f"tighter) -- confirms the guaranteed direction of the effect. NOTE: these particular fixtures happen "
+      f"to be near-coplanar with slow relative drift, so the gap here is small; DISCLAIMER and the "
+      f"compute_min_separation() docstring's ~450 km worst-case figure (15 km/s relative velocity x 30s "
+      f"step) describe the real-world stakes for a genuinely fast crossing, which this test does not "
+      f"attempt to manufacture.\n")
+
+print("=== pipeline: Day 22's bound_population() output feeds Day 23's screen_conjunctions() directly ===")
+# The intended real usage: bound_population() tells you WHICH catnrs are
+# worth propagating; screen_conjunctions() does the propagating. This test
+# performs that handoff explicitly against the Day 22 fixture population
+# plus the three new phase-offset satellites, confirming the two stages
+# compose without any glue code beyond a catnr lookup.
+full_population = [primary, cand_same, cand_in, cand_out, cand_far, cand_ecc,
+                    phase_high, phase_moderate, phase_low]
+survivors_df = bound_population(primary, full_population, margin_km=DEFAULT_MARGIN_KM)
+survivor_catnrs = set(survivors_df["catnr"])
+survivor_sats = [sat for sat in full_population if sat.model.satnum in survivor_catnrs]
+
+assert len(survivor_sats) == len(survivors_df), "every survivor catnr should resolve back to exactly one satellite"
+
+screened = screen_conjunctions(primary, survivor_sats, t0)
+assert set(screened["catnr"]) == survivor_catnrs, "screen_conjunctions should cover exactly what bound_population handed it"
+# cand_far and cand_out were excluded at Day 22's stage -- confirm they never even reach Day 23's stage.
+assert cand_far.name not in set(screened["name"])
+assert cand_out.name not in set(screened["name"])
+print(f"  PASS: {len(survivors_df)} Day-22 survivors piped directly into Day 23's screening, "
+      f"producing {len(screened)} classified results with no manual glue code\n")
 
 print("ALL CHECKS PASSED")

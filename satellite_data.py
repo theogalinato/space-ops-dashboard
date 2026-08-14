@@ -117,19 +117,22 @@ def compute_subpoints(satellites: list[EarthSatellite], t) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _build_time_array(t0, minutes: float, step_seconds: int):
+def build_time_array(t0, minutes: float, step_seconds: int):
     """
-    Shared by compute_ground_track and Day 19's compute_orbit_arc: build a
-    Skyfield time array spanning `minutes` starting at t0, one point every
-    step_seconds.
+    Shared by compute_ground_track, Day 19's compute_orbit_arc, and Day 23's
+    conjunction.py screening functions: build a Skyfield time array spanning
+    `minutes` starting at t0, one point every step_seconds.
 
     Builds it with ts.from_datetimes() over a list of Python datetimes --
     NOT ts.utc() with a generator (Day 5 lesson: that raises a TypeError).
-    Pulled out on Day 19 so both functions share one implementation instead
-    of the same loop (and the same Day-5 lesson comment) living in two
-    places -- compute_orbit_arc needs the exact same time-array construction
-    compute_ground_track already had, just evaluated in a different frame
-    afterward.
+    Pulled out on Day 19 so compute_ground_track and compute_orbit_arc could
+    share one implementation instead of the same loop (and the same Day-5
+    lesson comment) living in two places. Renamed on Day 23, dropping the
+    leading underscore, when conjunction.py became a second MODULE that
+    needed it, not just a second function in this one -- a leading
+    underscore signals "private to this file," and importing one across a
+    module boundary anyway is worse than admitting this helper is now a
+    shared utility and naming it like one.
     """
     n_steps = int((minutes * 60) / step_seconds) + 1
     t0_dt = t0.utc_datetime()
@@ -151,7 +154,7 @@ def compute_ground_track(
     Returns a DataFrame with columns: time_utc, latitude_deg,
     longitude_deg, altitude_km -- one row per timestep.
     """
-    times, datetimes = _build_time_array(t0, minutes, step_seconds)
+    times, datetimes = build_time_array(t0, minutes, step_seconds)
 
     geocentric = sat.at(times)
     subpoint = wgs84.subpoint(geocentric)
@@ -215,7 +218,7 @@ def compute_orbit_arc(
     Day 19: ECEF x/y/z for ONE satellite traced over one orbital period --
     the "orbit arc" for the 3D globe. The 3D-space counterpart to
     compute_ground_track: same time-window idea (reuses
-    _build_time_array), but returns the satellite's own ECEF path through
+    build_time_array), but returns the satellite's own ECEF path through
     space rather than its ground-projected subpoint.
 
     minutes defaults to None, meaning "use this satellite's own orbital
@@ -248,7 +251,7 @@ def compute_orbit_arc(
     if minutes is None:
         minutes = compute_orbital_params(sat, t0)["period_min"]
 
-    times, datetimes = _build_time_array(t0, minutes, step_seconds)
+    times, datetimes = build_time_array(t0, minutes, step_seconds)
 
     geocentric = sat.at(times)
     x, y, z = geocentric.frame_xyz(itrs).km
