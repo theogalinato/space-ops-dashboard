@@ -4,6 +4,7 @@ from satellite_data import ts, load_tle_group, compute_subpoints, compute_orbita
 from passes import get_next_n_passes, get_static_visibility, CITIES, MIN_ELEVATION_DEG
 from catalogue import load_catalogue, get_catalogue_satellites, merge_satellite_lists
 from space_weather import get_kp_index, get_xray_flux, get_solar_wind
+from space_weather_status import classify_geomagnetic_status, classify_radio_blackout_status
 import plotly.express as px
 
 st.set_page_config(page_title="Space Operations Dashboard", layout="wide")
@@ -198,17 +199,22 @@ with passes_tab:
             st.dataframe(passes_df, use_container_width=True, hide_index=True)
 
 # ============================================================
-# Day 15: raw NOAA SWPC ingestion and display. Deliberately stops at
-# showing the numbers -- no LOW/MODERATE/HIGH classification (Day 16) and
-# no operational "so what" assessment (the protected Day 17 work). Pulling
-# either of those forward would mean redoing them properly in two days
-# anyway, so today just proves the data pipeline end to end.
+# Day 15: raw NOAA SWPC ingestion and display.
+# Day 16: added the two LOW/MODERATE/HIGH status banners below, from
+# space_weather_status.py. Those banners state a classification and its
+# factual basis (Kp value vs. threshold, flare class vs. threshold) --
+# they deliberately do NOT say what that means for GNSS, HF radio, or
+# satellite ops. That plain-language "so what" is the protected Day 17
+# work, built on top of these same classifications rather than duplicating
+# them here.
 # ============================================================
 with weather_tab:
     st.caption(
-        "Raw NOAA SWPC data. This tab shows current readings and a short "
-        "history only -- no status classification or operational "
-        "interpretation yet."
+        "Raw NOAA SWPC data plus a rule-based status classification. "
+        "Status reflects current activity level only -- it is a "
+        "simplified educational assessment, not a real space weather "
+        "warning system, and does not yet say what the status means for "
+        "operations (that's next)."
     )
 
     try:
@@ -227,6 +233,29 @@ with weather_tab:
         latest_kp = kp_df.iloc[-1]
         latest_xray = xray_df.iloc[-1]
         latest_wind = wind_df.iloc[-1]
+
+        # Day 16: two independent status bands, not one fused "overall"
+        # number. Geomagnetic activity and radio blackout risk are
+        # different physical hazards driven by different mechanisms
+        # (magnetospheric coupling vs. sunlit-ionosphere X-ray exposure),
+        # so collapsing them into a single banner would hide which hazard
+        # is actually elevated. Solar wind/Bz has no formal NOAA scale
+        # this project can reduce (that needs >=10 MeV proton flux data
+        # this project doesn't ingest), so it stays informational-only
+        # below rather than getting an invented threshold.
+        geomag_status = classify_geomagnetic_status(latest_kp["estimated_kp"])
+        blackout_status = classify_radio_blackout_status(latest_xray["flare_class"])
+
+        _STATUS_RENDER = {"LOW": st.success, "MODERATE": st.warning, "HIGH": st.error}
+        banner_col1, banner_col2 = st.columns(2)
+        with banner_col1:
+            _STATUS_RENDER[geomag_status.level](
+                f"Geomagnetic activity: {geomag_status.level} -- {geomag_status.basis}"
+            )
+        with banner_col2:
+            _STATUS_RENDER[blackout_status.level](
+                f"Radio blackout risk: {blackout_status.level} -- {blackout_status.basis}"
+            )
 
         weather_col1, weather_col2, weather_col3, weather_col4 = st.columns(4)
         weather_col1.metric("Planetary Kp (estimated)", f"{latest_kp['estimated_kp']:.2f}")

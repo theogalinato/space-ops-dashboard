@@ -2,7 +2,7 @@
 
 This log tracks daily progress on the Space Operations Dashboard, a public data space domain awareness prototype built as a 28 day solo project. Each entry explains what was built that day, why it was built that way, and what problem (technical or operational) it solved. See the project instructions for the full schedule and scope.
 
-Days 1 through 15 are complete and committed and pushed.
+Days 1 through 16 are complete and committed and pushed.
 
 ### Day 1: First live satellite position
 
@@ -66,6 +66,14 @@ A second, smaller finding from this day: the real time solar wind feeds report f
 
 Because this sandboxed development environment cannot reach services.swpc.noaa.gov any more than it could reach CelesTrak earlier in the project, the module's network calls could not be tested end to end during development. Its two pure functions, the flare classifier and the active-source filter, were instead validated offline in `test_space_weather.py` using real sample records captured directly from the live feeds, the same approach `test_satellite_data.py` used back on Day 6. The full pipeline, including the actual network calls, was then verified against live data: all three feeds returned real current values (Kp, X-ray flare class, solar wind speed, solar wind density, and interplanetary magnetic field), confirming both the corrected solar wind endpoints and the rest of the ingestion logic work correctly end to end.
 
+### Day 16: rule-based LOW/MODERATE/HIGH status banner
+
+A new module, `space_weather_status.py`, turns Day 15's raw Kp and X-ray readings into a three-band status: LOW, MODERATE, or HIGH. Two hazards are classified independently rather than fused into one number, because they are physically different: geomagnetic activity (from the planetary Kp index) and radio blackout risk (from the GOES X-ray flare class). Both reductions are traced directly to an existing NOAA public scale rather than invented: the Kp thresholds (5 and 7) come from NOAA's G-scale, where G1 starts at Kp 5 and G3 starts at Kp 7; the flare-class thresholds come from NOAA's R-scale, where M-class flares fall in the R1-R2 range and X-class flares fall in R3 and above. Each result also carries a short factual basis string (the value and the threshold it crossed, e.g. "Kp 4.83, below the G1 minor-storm threshold (Kp 5)"), deliberately stopping short of saying what that means operationally -- that plain-language "so what" translation is Day 17's protected scope, and it will import and build on these classifications rather than duplicate them.
+
+A design decision worth recording: solar wind speed, density, and Bz, already ingested on Day 15, do NOT get a status band today. NOAA's own scale for solar-wind-driven hazards, the S-scale (solar radiation storms), is defined against >=10 MeV proton flux, a measurement this project does not ingest. Making up a speed/Bz threshold with no public scale behind it would present an invented number as if it were a real classification, which conflicts with this project's honesty constraints. Solar wind stays informational-only in the Space Weather tab; Bz remains available for Day 17 to use as a contributing factor in the operational narrative, just not as a formal banded status.
+
+Both status functions are pure (no network calls), so `test_space_weather_status.py` covers the whole module offline: every band for both hazards, plus the exact Kp 5.00 and Kp 7.00 boundary values, since the G-scale boundaries are defined as "at or above," not "strictly above." `app.py`'s Space Weather tab now shows the two banners (color-coded green/yellow/red via `st.success`/`st.warning`/`st.error`) above the existing raw metrics and charts, with the tab's caption updated to describe the status as a simplified educational assessment rather than a real warning system.
+
 ## Real Findings Worth Remembering
 
 **CelesTrak group membership is not consistent across satellites (Day 12).** RADARSAT-2 and all three RADARSAT Constellation Mission satellites are not members of CelesTrak's "active" group. This was confirmed directly by checking which local cache files were created: `catnr_32382.tle` (RADARSAT-2) and `catnr_44322.tle`, `catnr_44323.tle`, `catnr_44324.tle` (RCM-1, RCM-2, RCM-3) all had to be fetched individually. Sapphire, NEOSSat, SCISAT-1, and both Anik satellites were found in the "active" group and needed no individual fetch. In practice, the bulk fetch optimization described on Day 12 caught 5 of 9 catalogue satellites, reducing what would have been 9 individual network requests down to 1 bulk request plus 4 individual fallbacks.
@@ -81,7 +89,8 @@ Because this sandboxed development environment cannot reach services.swpc.noaa.g
 * `satellite_data.py`: shared TLE loading and orbital parameter calculations (`load_tle_group`, `get_satellite_by_catnr`, `compute_subpoints`, `compute_ground_track`, `compute_orbital_params`), plus the single shared Skyfield `Timescale` object (`ts`) used everywhere else in the app.
 * `passes.py`: pass prediction for five Canadian cities (`get_passes`, `get_next_n_passes`), plus `get_static_visibility` for satellites, such as GEO assets, that do not have discrete passes.
 * `catalogue.py`: loads the curated Canadian asset catalogue CSV and fetches live TLEs for those satellites, merging them into the same trackable pool used by the rest of the app.
-* `space_weather.py`: NOAA SWPC ingestion for the planetary Kp index, GOES X-ray flux, and real time solar wind (`get_kp_index`, `get_xray_flux`, `get_solar_wind`), plus the standalone A/B/C/M/X flare classifier (`classify_xray_flare`). Ingestion and display only; no status classification yet.
+* `space_weather.py`: NOAA SWPC ingestion for the planetary Kp index, GOES X-ray flux, and real time solar wind (`get_kp_index`, `get_xray_flux`, `get_solar_wind`), plus the standalone A/B/C/M/X flare classifier (`classify_xray_flare`).
+* `space_weather_status.py`: rule-based LOW/MODERATE/HIGH classification of geomagnetic activity (from Kp) and radio blackout risk (from X-ray flare class), each traced to an existing NOAA scale (`classify_geomagnetic_status`, `classify_radio_blackout_status`). Classification only; no operational "so what" interpretation yet -- that's Day 17.
 * `app.py`: the Streamlit application itself, organized into four tabs (Map, Canadian Asset Catalogue, Next Passes, Space Weather), with satellite search, selection, and orbital parameter metrics displayed above all four tabs since the first three depend on them.
 * `iss_position.py`, `load_satellites.py`, `plot_map.py`, `ground_track.py`, `pass_prediction.py`: the original Day 1, 2, 4, 5, and 10 standalone scripts. All of their logic has since been superseded by the shared modules above. They are being kept in place for now as a visible record of the project's build order; see Open Items below for the open question of whether to trim them.
 * `docs/screenshots/`: dated screenshots documenting the app's state at project milestones, starting with the five captured at the Day 14 checkpoint.
@@ -93,4 +102,4 @@ Because this sandboxed development environment cannot reach services.swpc.noaa.g
 
 ## Next Up
 
-Day 16 turns Day 15's raw Kp, X-ray, and solar wind readings into a rule-based LOW, MODERATE, or HIGH status banner, the first step toward the operational "so what" assessment that Day 17 is protected to focus on in full.
+Day 17 (protected) turns Day 16's LOW/MODERATE/HIGH status into the plain-language operational "so what": what an elevated geomagnetic or radio blackout status actually means for GNSS accuracy, HF radio, and satellite operations.
