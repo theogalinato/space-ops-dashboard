@@ -5,6 +5,7 @@ from passes import get_next_n_passes, get_static_visibility, CITIES, MIN_ELEVATI
 from catalogue import load_catalogue, get_catalogue_satellites, merge_satellite_lists
 from space_weather import get_kp_index, get_xray_flux, get_solar_wind
 from space_weather_status import classify_geomagnetic_status, classify_radio_blackout_status
+from operational_assessment import assess_geomagnetic_impact, assess_radio_blackout_impact, DISCLAIMER
 import plotly.express as px
 
 st.set_page_config(page_title="Space Operations Dashboard", layout="wide")
@@ -203,18 +204,21 @@ with passes_tab:
 # Day 16: added the two LOW/MODERATE/HIGH status banners below, from
 # space_weather_status.py. Those banners state a classification and its
 # factual basis (Kp value vs. threshold, flare class vs. threshold) --
-# they deliberately do NOT say what that means for GNSS, HF radio, or
-# satellite ops. That plain-language "so what" is the protected Day 17
-# work, built on top of these same classifications rather than duplicating
-# them here.
+# deliberately not what that means for GNSS, HF radio, or satellite ops.
+# Day 17 (protected): added the Operational Impact panel, from
+# operational_assessment.py. It imports the same StatusResult objects the
+# Day 16 banners already compute rather than re-deriving anything, and
+# turns each one into a plain-language "so what" across the three domains
+# this project's scope names (GNSS, HF radio, sat-ops). This is the
+# differentiator feature -- see DISCLAIMER for why it's still clearly
+# labeled a simplified educational assessment, not a real warning system.
 # ============================================================
 with weather_tab:
     st.caption(
-        "Raw NOAA SWPC data plus a rule-based status classification. "
-        "Status reflects current activity level only -- it is a "
-        "simplified educational assessment, not a real space weather "
-        "warning system, and does not yet say what the status means for "
-        "operations (that's next)."
+        "Raw NOAA SWPC data, a rule-based status classification, and a "
+        "plain-language operational impact assessment. This is a "
+        "simplified educational tool, not a real space weather warning "
+        "system -- see the disclaimer below the status banners."
     )
 
     try:
@@ -256,6 +260,28 @@ with weather_tab:
             _STATUS_RENDER[blackout_status.level](
                 f"Radio blackout risk: {blackout_status.level} -- {blackout_status.basis}"
             )
+
+        # Day 17 (protected): the "so what" -- plain-language operational
+        # impact for each hazard, across the three domains this project's
+        # scope names. Shown right after the status banners and before the
+        # raw metrics/charts below, so an operator gets the bottom line
+        # first and the supporting data second, rather than having to read
+        # numbers before getting to what they mean.
+        st.subheader('Operational Impact ("so what?")')
+        st.caption(DISCLAIMER)
+        geomag_impact = assess_geomagnetic_impact(geomag_status)
+        blackout_impact = assess_radio_blackout_impact(blackout_status)
+        impact_col1, impact_col2 = st.columns(2)
+        with impact_col1:
+            st.markdown(f"**{geomag_impact.hazard} -- {geomag_impact.level}**")
+            st.markdown(f"- **GNSS:** {geomag_impact.gnss}")
+            st.markdown(f"- **HF radio:** {geomag_impact.hf_radio}")
+            st.markdown(f"- **Sat-ops:** {geomag_impact.sat_ops}")
+        with impact_col2:
+            st.markdown(f"**{blackout_impact.hazard} -- {blackout_impact.level}**")
+            st.markdown(f"- **GNSS:** {blackout_impact.gnss}")
+            st.markdown(f"- **HF radio:** {blackout_impact.hf_radio}")
+            st.markdown(f"- **Sat-ops:** {blackout_impact.sat_ops}")
 
         weather_col1, weather_col2, weather_col3, weather_col4 = st.columns(4)
         weather_col1.metric("Planetary Kp (estimated)", f"{latest_kp['estimated_kp']:.2f}")

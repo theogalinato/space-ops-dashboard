@@ -2,7 +2,7 @@
 
 This log tracks daily progress on the Space Operations Dashboard, a public data space domain awareness prototype built as a 28 day solo project. Each entry explains what was built that day, why it was built that way, and what problem (technical or operational) it solved. See the project instructions for the full schedule and scope.
 
-Days 1 through 16 are complete and committed and pushed.
+Days 1 through 17 are complete. Day 17 is written and offline-tested; commit/push and live verification happen after review.
 
 ### Day 1: First live satellite position
 
@@ -72,7 +72,17 @@ A new module, `space_weather_status.py`, turns Day 15's raw Kp and X-ray reading
 
 A design decision worth recording: solar wind speed, density, and Bz, already ingested on Day 15, do NOT get a status band today. NOAA's own scale for solar-wind-driven hazards, the S-scale (solar radiation storms), is defined against >=10 MeV proton flux, a measurement this project does not ingest. Making up a speed/Bz threshold with no public scale behind it would present an invented number as if it were a real classification, which conflicts with this project's honesty constraints. Solar wind stays informational-only in the Space Weather tab; Bz remains available for Day 17 to use as a contributing factor in the operational narrative, just not as a formal banded status.
 
-Both status functions are pure (no network calls), so `test_space_weather_status.py` covers the whole module offline: every band for both hazards, plus the exact Kp 5.00 and Kp 7.00 boundary values, since the G-scale boundaries are defined as "at or above," not "strictly above." `app.py`'s Space Weather tab now shows the two banners (color-coded green/yellow/red via `st.success`/`st.warning`/`st.error`) above the existing raw metrics and charts, with the tab's caption updated to describe the status as a simplified educational assessment rather than a real warning system.
+Both status functions are pure (no network calls), so `test_space_weather_status.py` covers the whole module offline: every band for both hazards, plus the exact Kp 5.00 and Kp 7.00 boundary values, since the G-scale boundaries are defined as "at or above," not "strictly above." `app.py`'s Space Weather tab now shows the two banners (color-coded green/yellow/red via `st.success`/`st.warning`/`st.error`) above the existing raw metrics and charts, with the tab's caption updated to describe the status as a simplified educational assessment rather than a real warning system. Verified live: banners read green (LOW) against current data, boundary logic confirmed correct.
+
+### Day 17 (protected): operational assessment, the "so what" engine
+
+A new module, `operational_assessment.py`, turns Day 16's LOW/MODERATE/HIGH classifications into plain-language operational impact statements. It imports `space_weather_status.py`'s `StatusResult` objects directly rather than re-deriving any thresholds, which was a design commitment made explicitly on Day 16 so this day wouldn't have to choose between duplicating logic and reworking yesterday's module. The Day 16 split into two independent hazards (geomagnetic activity, radio blackout risk) carries forward unchanged; today's addition is that each hazard's status now resolves to an `OperationalAssessment`, a plain-language statement spanning the three domains this project's own MVP scope names: GNSS positioning and timing, HF radio propagation, and satellite operations (drag, charging, attitude).
+
+Every statement in the two lookup tables (`_GEOMAGNETIC_IMPACT`, `_RADIO_BLACKOUT_IMPACT`) is a condensed, hedged paraphrase of NOAA's own public G-scale and R-scale operational impact tables, reduced from their native five levels down to this project's three bands the same way the classification thresholds were reduced on Day 16. Nothing is invented: where a three-band MODERATE folds two NOAA levels together (G1+G2, or R1+R2), the more conservative language is used, and wording is deliberately hedged ("possible," "likely," never "will") to reflect that a 3-band reduction of a 5-band scale is coarser than the real thing. A module-level `DISCLAIMER` string states plainly that this is a simplified educational assessment, not a real space weather warning system, and points to NOAA SWPC directly for official products. `app.py` displays that disclaimer directly under the new "Operational Impact" section heading, not buried in a footnote.
+
+Solar wind and Bz still get no assessment today, for the same reason they got no status band on Day 16: NOAA's S-scale (solar radiation storms) is defined against >=10 MeV proton flux, which this project does not ingest, and inventing a speed/Bz-based severity judgment with no real scale behind it would fail this project's own honesty constraint. Bz remains raw, informational data in the Space Weather tab.
+
+In `app.py`, the Operational Impact panel was placed directly below the Day 16 status banners and above the raw metrics and charts -- bottom line up front, supporting numbers second, rather than requiring the numbers to be read before their meaning is explained. Both lookup tables are pure (no network calls), so `test_operational_assessment.py` covers the whole module offline: every level for both hazards resolves to a complete assessment with all three domain fields populated, and the hazard/level tags on each result match what was requested.
 
 ## Real Findings Worth Remembering
 
@@ -90,7 +100,8 @@ Both status functions are pure (no network calls), so `test_space_weather_status
 * `passes.py`: pass prediction for five Canadian cities (`get_passes`, `get_next_n_passes`), plus `get_static_visibility` for satellites, such as GEO assets, that do not have discrete passes.
 * `catalogue.py`: loads the curated Canadian asset catalogue CSV and fetches live TLEs for those satellites, merging them into the same trackable pool used by the rest of the app.
 * `space_weather.py`: NOAA SWPC ingestion for the planetary Kp index, GOES X-ray flux, and real time solar wind (`get_kp_index`, `get_xray_flux`, `get_solar_wind`), plus the standalone A/B/C/M/X flare classifier (`classify_xray_flare`).
-* `space_weather_status.py`: rule-based LOW/MODERATE/HIGH classification of geomagnetic activity (from Kp) and radio blackout risk (from X-ray flare class), each traced to an existing NOAA scale (`classify_geomagnetic_status`, `classify_radio_blackout_status`). Classification only; no operational "so what" interpretation yet -- that's Day 17.
+* `space_weather_status.py`: rule-based LOW/MODERATE/HIGH classification of geomagnetic activity (from Kp) and radio blackout risk (from X-ray flare class), each traced to an existing NOAA scale (`classify_geomagnetic_status`, `classify_radio_blackout_status`).
+* `operational_assessment.py`: the "so what" engine (Day 17, protected). Turns each `StatusResult` from `space_weather_status.py` into a plain-language `OperationalAssessment` spanning GNSS, HF radio, and sat-ops impact (`assess_geomagnetic_impact`, `assess_radio_blackout_impact`), plus a `DISCLAIMER` constant displayed alongside every assessment in the app.
 * `app.py`: the Streamlit application itself, organized into four tabs (Map, Canadian Asset Catalogue, Next Passes, Space Weather), with satellite search, selection, and orbital parameter metrics displayed above all four tabs since the first three depend on them.
 * `iss_position.py`, `load_satellites.py`, `plot_map.py`, `ground_track.py`, `pass_prediction.py`: the original Day 1, 2, 4, 5, and 10 standalone scripts. All of their logic has since been superseded by the shared modules above. They are being kept in place for now as a visible record of the project's build order; see Open Items below for the open question of whether to trim them.
 * `docs/screenshots/`: dated screenshots documenting the app's state at project milestones, starting with the five captured at the Day 14 checkpoint.
@@ -102,4 +113,4 @@ Both status functions are pure (no network calls), so `test_space_weather_status
 
 ## Next Up
 
-Day 17 (protected) turns Day 16's LOW/MODERATE/HIGH status into the plain-language operational "so what": what an elevated geomagnetic or radio blackout status actually means for GNSS accuracy, HF radio, and satellite operations.
+Day 18 starts Week 3's visual upgrade: the first half of the true 3D globe (ECI to ECEF conversion, an Earth sphere mesh, and `scatter3d`), replacing the flat `scattergeo` map used since Day 4.
