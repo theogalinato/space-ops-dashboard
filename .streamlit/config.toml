@@ -1,0 +1,27 @@
+# Day 26: deliberate dark theme rather than Streamlit's light default.
+#
+# Two reasons, not just taste: (1) it matches the 3D globe's dark navy
+# Earth sphere (Days 18-19) instead of fighting it inside a white page,
+# and (2) a dark, low-glare look reads as an ops/mission-control tool
+# rather than a business report, which fits what this project is for.
+#
+# primaryColor is the same hex as the categorical "blue" slot used for
+# the general tracked-satellite population on the 2D map and (kept
+# distinct from LEO's silver, see live_globe / globe.py) available as a
+# consistent accent color for widgets, active tab underlines, and
+# sliders -- one blue, one meaning, used consistently across the whole
+# app rather than Streamlit's default red.
+#
+# backgroundColor is the same "chart surface" dark gray the app's data-
+# viz color choices were validated against (see app.py and globe.py
+# comments on the LEO/MEO/GEO and "selected satellite" marker colors).
+# secondaryBackgroundColor is one step lighter, for the sidebar and
+# widget chrome, so they read as a distinct layer above the page
+# background rather than blending into it.
+[theme]
+base = "dark"
+primaryColor = "#3987e5"
+backgroundColor = "#1a1a19"
+secondaryBackgroundColor = "#242420"
+textColor = "#ffffff"
+font = "sans serif"

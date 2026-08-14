@@ -102,13 +102,26 @@ fig.add_trace(go.Surface(
 # One trace per orbit regime rather than one gray trace for everything
 # (Day 18's approach). Point of today: LEO, MEO, and GEO satellites sit at
 # such different distances from Earth that lumping them into one trace
-# hides the very scale problem this globe exists to show honestly. Colors
-# chosen for contrast against the dark sphere and each other, not for any
-# operational meaning.
+# hides the very scale problem this globe exists to show honestly.
+#
+# Day 26: MEO/GEO recolored after running the original orange/gold pair
+# through a colorblind + contrast validator (Anthropic's dataviz skill) --
+# they failed even the plain normal-vision separation check (Delta-E 12.1,
+# need >=15), meaning they were genuinely hard to tell apart, not just a
+# colorblind-accessibility gap. d95926/199e70 is a validated pair (all
+# checks pass, including the harder all-pairs test a scatter/globe view
+# needs, not just adjacent-pair). LEO's "silver" was flagged too (reads as
+# zero-chroma gray, which is real), but a render-and-look check
+# (references/dataviz's own step 7) showed silver-on-navy-sphere is the
+# single most legible combination tried for the majority category, and
+# LEO can't be mistaken for a muted/de-emphasized "other" here -- it's the
+# dominant category by a wide margin (typically ~95% of the tracked
+# population) with its own labeled count. Kept deliberately, not an
+# oversight.
 _REGIME_STYLE = {
     "LEO": dict(color="silver", size=2.5),
-    "MEO": dict(color="orange", size=4),
-    "GEO": dict(color="gold", size=5),
+    "MEO": dict(color="#d95926", size=4),
+    "GEO": dict(color="#199e70", size=5),
 }
 for regime, style in _REGIME_STYLE.items():
     subset = df[df["regime"] == regime]
@@ -122,19 +135,27 @@ for regime, style in _REGIME_STYLE.items():
         name=f"{regime} ({len(subset)})",
     ))
 
+# Day 26: highlight color moved from red to white. Red now means HIGH/
+# critical risk specifically (Space Weather tab since Day 16, Conjunction
+# Screening tab since Day 24) -- reusing it here for "this is the
+# satellite you're looking at" was a real semantic collision, not just a
+# style choice: a red diamond next to a satellite invites reading it as
+# "this one is dangerous" when it just means "selected." White reads as a
+# highlight/flag with no status meaning attached, the same role a bright
+# neutral plays in conventional ops-map symbology.
 fig.add_trace(go.Scatter3d(
     x=r2_df["x_km"], y=r2_df["y_km"], z=r2_df["z_km"],
     text=["RADARSAT-2"],
     mode="markers+text",
     textposition="top center",
-    marker=dict(size=7, color="red", symbol="diamond"),
+    marker=dict(size=7, color="#ffffff", symbol="diamond"),
     name="RADARSAT-2 (Canadian asset)",
 ))
 
 fig.add_trace(go.Scatter3d(
     x=arc_df["x_km"], y=arc_df["y_km"], z=arc_df["z_km"],
     mode="lines",
-    line=dict(color="red", width=3),
+    line=dict(color="#ffffff", width=3),
     opacity=0.6,
     name="RADARSAT-2 orbit arc (1 period, ECEF)",
     hoverinfo="skip",
@@ -167,6 +188,13 @@ fig.add_trace(go.Scatter3d(
 # this is a starting view, not the only view.
 fig.update_layout(
     title=f"3D Globe -- ECEF positions, {t.utc_strftime('%Y-%m-%d %H:%M UTC')}",
+    # Day 26: dark chrome to match the app's new dark theme (and the
+    # sphere's own dark navy) instead of Plotly's default white page
+    # around a dark scene -- this is a standalone script, so it doesn't
+    # inherit Streamlit's theme, but there's no reason for it to look
+    # inconsistent with the tool it's the proof-of-concept for.
+    template="plotly_dark",
+    paper_bgcolor="#1a1a19",
     scene=dict(
         aspectmode="data",
         xaxis=dict(visible=False),

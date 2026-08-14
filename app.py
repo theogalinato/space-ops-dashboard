@@ -73,8 +73,20 @@ import plotly.graph_objects as go
 # bug (the Space Weather tab would start showing the conjunction-screening
 # disclaimer instead of its own).
 
-st.set_page_config(page_title="Space Operations Dashboard", layout="wide")
+st.set_page_config(
+    page_title="Space Operations Dashboard",
+    layout="wide",
+    # Day 26: explicit rather than "auto" -- the sidebar now holds the
+    # satellite search/select/metrics panel every tab depends on, so it
+    # should never start collapsed on first load.
+    initial_sidebar_state="expanded",
+)
 st.title("Space Operations Dashboard")
+st.caption(
+    "A public-data space domain awareness prototype -- not a real "
+    "military, intelligence, or operational CAF/3 CSD system. See the "
+    "sidebar and each tab's disclaimer for specifics."
+)
 
 # ============================================================
 # Day 20: caching + real-time refresh.
@@ -238,11 +250,18 @@ def live_orbital_metrics(sat):
     params = compute_orbital_params(sat, t_now)
     altitude_km = compute_subpoints([sat], t_now)["altitude_km"].iloc[0]
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Altitude", f"{altitude_km:.0f} km")
-    col2.metric("Inclination", f"{params['inclination_deg']:.2f}°")
-    col3.metric("Period", f"{params['period_min']:.1f} min")
-    col4.metric("Speed", f"{params['speed_km_s']:.2f} km/s")
+    # Day 26: single column, not a 2x2 or 4-across grid. A 2x2 grid was
+    # tried first (reasonable-looking guess for the sidebar's ~300px), but
+    # an actual rendered screenshot (not just eyeballing the code) showed
+    # "92.9 min" and "7.78 km/s" truncating with an ellipsis at that
+    # column width -- st.metric's value text is large by default and two
+    # columns just isn't enough room once a unit is appended. Stacked
+    # single-column costs vertical space, which the sidebar has plenty of,
+    # in exchange for every value actually being readable.
+    st.metric("Altitude", f"{altitude_km:.0f} km")
+    st.metric("Inclination", f"{params['inclination_deg']:.2f}°")
+    st.metric("Period", f"{params['period_min']:.1f} min")
+    st.metric("Speed", f"{params['speed_km_s']:.2f} km/s")
 
     st.caption(
         f"Live as of {t_now.utc_strftime('%H:%M:%S')} UTC, recomputed every "
@@ -266,15 +285,47 @@ def live_map(satellites, selected_name):
         hover_name="name",
         projection="natural earth",
     )
+    # Day 26: explicit blue rather than Plotly's default marker color, so
+    # "the whole tracked population" reads as one consistent color across
+    # this map and the 3D globe's legend, instead of two different blues
+    # that happen to both be called "default."
+    fig.update_traces(marker=dict(color="#3987e5", size=5))
 
+    # Day 26: white, not red -- red is reserved app-wide for HIGH/critical
+    # risk (Space Weather since Day 16, Conjunction Screening since Day
+    # 24). Same reasoning as the matching fix in live_globe/globe.py.
     selected_row = df[df["name"] == selected_name]
     fig.add_scattergeo(
         lat=selected_row["latitude_deg"],
         lon=selected_row["longitude_deg"],
         text=selected_row["name"],
         mode="markers",
-        marker=dict(size=14, color="red"),
+        marker=dict(size=14, color="#ffffff"),
         name="Selected",
+    )
+
+    # Day 26: dark land/ocean colors so this map matches the app's dark
+    # theme instead of sitting as a light-mode island inside it. This is
+    # NOT redundant with Streamlit's automatic plotly theming (st.plotly_
+    # chart re-themes general chart chrome -- background, fonts, colorway
+    # -- to match .streamlit/config.toml on its own) -- geo subplot
+    # properties like land/ocean color are geography-specific and aren't
+    # part of that automatic theming, so they need setting explicitly.
+    # Ocean reuses the exact navy from the 3D globe's Earth sphere
+    # (earth_mesh.py / globe.py's "rgb(25,55,109)"), so the 2D and 3D
+    # views read as the same planet rather than two different palettes.
+    fig.update_geos(
+        showland=True,
+        showframe=False,
+        bgcolor="#1a1a19",
+        landcolor="#33332d",
+        oceancolor="rgb(25,55,109)",
+        showocean=True,
+        showlakes=True,
+        lakecolor="rgb(25,55,109)",
+        showcountries=True,
+        countrycolor="#44443d",
+        coastlinecolor="#55554d",
     )
 
     # uirevision preserves the user's zoom/pan across refreshes. Without
@@ -341,10 +392,19 @@ def live_globe(satellites, selected_sat, selected_name, regime_filter):
     # One trace per regime, same reasoning as globe.py: lumping LEO/MEO/GEO
     # into one trace would hide the scale difference this view exists to
     # show honestly.
+    #
+    # Day 26: colors kept in sync with globe.py's own _REGIME_STYLE -- see
+    # that file's comment for the full reasoning (orange/gold failed a
+    # colorblind + contrast validator's plain normal-vision check, d95926/
+    # 199e70 is a validated replacement; silver stays for LEO as a
+    # deliberate, render-and-checked exception, not an oversight). Two
+    # copies of this dict exist on purpose (globe.py stays a standalone,
+    # Streamlit-free proof-of-concept per Day 21's own note below) -- keep
+    # them matching by hand if either changes.
     _REGIME_STYLE = {
         "LEO": dict(color="silver", size=2.5),
-        "MEO": dict(color="orange", size=4),
-        "GEO": dict(color="gold", size=5),
+        "MEO": dict(color="#d95926", size=4),
+        "GEO": dict(color="#199e70", size=5),
     }
     for regime, style in _REGIME_STYLE.items():
         subset = df[df["regime"] == regime]
@@ -360,9 +420,14 @@ def live_globe(satellites, selected_sat, selected_name, regime_filter):
 
     # Highlight + orbit arc for whichever satellite is selected up top --
     # globe.py hardcodes RADARSAT-2 since it's a standalone proof-of-concept;
-    # here the app's own selection drives it, same as live_map's red marker.
+    # here the app's own selection drives it, same as live_map's marker.
     # If the regime filter excludes the selected satellite's own regime, it
     # simply won't appear -- flagged below rather than silently empty.
+    #
+    # Day 26: white, not red -- red is reserved app-wide for HIGH/critical
+    # risk (Space Weather since Day 16, Conjunction Screening since Day
+    # 24), so using it here too meant a selected satellite could get
+    # misread as "dangerous" rather than just "the one you clicked."
     selected_row = df[df["name"] == selected_name]
     if not selected_row.empty:
         fig.add_trace(go.Scatter3d(
@@ -370,7 +435,7 @@ def live_globe(satellites, selected_sat, selected_name, regime_filter):
             text=[selected_name],
             mode="markers+text",
             textposition="top center",
-            marker=dict(size=7, color="red", symbol="diamond"),
+            marker=dict(size=7, color="#ffffff", symbol="diamond"),
             name=f"{selected_name} (selected)",
         ))
 
@@ -378,7 +443,7 @@ def live_globe(satellites, selected_sat, selected_name, regime_filter):
         fig.add_trace(go.Scatter3d(
             x=arc_df["x_km"], y=arc_df["y_km"], z=arc_df["z_km"],
             mode="lines",
-            line=dict(color="red", width=3),
+            line=dict(color="#ffffff", width=3),
             opacity=0.6,
             name=f"{selected_name} orbit arc (1 period, ECEF)",
             hoverinfo="skip",
@@ -702,46 +767,77 @@ catalogue_df = get_catalogue_df()
 
 names = [sat.name for sat in satellites]
 
-search_term = st.text_input("Search satellites", "")
-if search_term:
-    filtered_names = [n for n in names if search_term.lower() in n.lower()]
-else:
-    filtered_names = names
-if not filtered_names:
-    st.warning(f"No satellites in the 'visual' group match '{search_term}'.")
-    st.stop()
+# ============================================================
+# Day 26: search/select/metrics moved into the sidebar, resolving the
+# question Day 13 deliberately left open ("sidebar redesign... skipped").
+# It was a real trade then (a buffer day is the wrong place for a layout
+# rewrite) and a real decision now, on the day meant for exactly this:
+# these controls drive every tab below, so they read more like a
+# persistent instrument panel than content belonging to any one tab --
+# a sidebar is the conventional place for "applies everywhere" controls,
+# and it frees the tabs themselves to start right at each tab's own
+# content instead of repeating the same header block underneath it.
+# All the underlying variables (selected_sat, regime, t_page, age_days,
+# ...) stay plain page-scope Python either way -- moving the RENDERING
+# calls into `st.sidebar` doesn't change what's computed or when, only
+# where it's drawn.
+# ============================================================
+with st.sidebar:
+    st.header("Satellite Tracking")
 
-selected_name = st.selectbox("Select a satellite", filtered_names)
-selected_sat = next(sat for sat in satellites if sat.name == selected_name)
+    search_term = st.text_input("Search satellites", "")
+    if search_term:
+        filtered_names = [n for n in names if search_term.lower() in n.lower()]
+    else:
+        filtered_names = names
+    if not filtered_names:
+        st.warning(f"No satellites in the 'visual' group match '{search_term}'.")
+        st.stop()
 
-st.write(f"Tracking: **{selected_sat.name}** (NORAD {selected_sat.model.satnum})")
+    selected_name = st.selectbox("Select a satellite", filtered_names)
+    selected_sat = next(sat for sat in satellites if sat.name == selected_name)
 
-# Live metrics panel (Day 20 fragment -- refreshes on its own timer).
-live_orbital_metrics(selected_sat)
+    st.write(f"Tracking: **{selected_sat.name}** (NORAD {selected_sat.model.satnum})")
 
-# Orbit regime and TLE age are computed at PAGE level, not inside a
-# fragment, on purpose: both are effectively static for a given satellite
-# over a viewing session (a satellite does not change orbit regime, and
-# TLE age creeps by seconds), and `regime` drives which branch the Next
-# Passes tab takes below -- so it needs to exist in page scope regardless.
-t_page = ts.now()
-altitude_km = compute_subpoints([selected_sat], t_page)["altitude_km"].iloc[0]
-regime = classify_orbit_regime(altitude_km)
+    # Live metrics panel (Day 20 fragment -- refreshes on its own timer).
+    # Day 26: 2x2 grid rather than the 4-across row this used when it sat
+    # at page width -- four st.metric columns squeezed into the sidebar's
+    # ~300px would each have almost no room and wrap awkwardly.
+    live_orbital_metrics(selected_sat)
 
-st.caption(f"Orbit regime: {regime}")
+    # Orbit regime and TLE age are computed at PAGE level, not inside a
+    # fragment, on purpose: both are effectively static for a given
+    # satellite over a viewing session (a satellite does not change orbit
+    # regime, and TLE age creeps by seconds), and `regime` drives which
+    # branch the Next Passes tab takes below -- so it needs to exist in
+    # page scope regardless of which container renders it.
+    t_page = ts.now()
+    altitude_km = compute_subpoints([selected_sat], t_page)["altitude_km"].iloc[0]
+    regime = classify_orbit_regime(altitude_km)
 
-age_days = t_page - selected_sat.epoch
-if age_days > 3:
-    st.warning(f"TLE is {age_days:.1f} days old — position accuracy may be degraded.")
-else:
-    st.caption(f"TLE age: {age_days:.1f} days")
+    st.caption(f"Orbit regime: {regime}")
+
+    age_days = t_page - selected_sat.epoch
+    if age_days > 3:
+        st.warning(f"TLE is {age_days:.1f} days old — position accuracy may be degraded.")
+    else:
+        st.caption(f"TLE age: {age_days:.1f} days")
+
+    st.divider()
+    st.caption(
+        "Public-data educational prototype. Conjunction screening is a "
+        "simplified heuristic, not a certified Pc system -- public TLEs "
+        "carry no usable covariance. Space weather assessment is "
+        "simplified and educational, not a warning system. Full "
+        "disclaimers are on the relevant tabs and in the README."
+    )
 
 # ============================================================
 # Day 13: separate tabs instead of one long vertical scroll. Map/Catalogue/
 # Passes/Conjunction are logically separate operator questions ("where is
 # it," "what do we have," "when's it overhead," "is anything too close to
 # it") and don't need to share screen space -- the search/select panel and
-# metrics above stay outside the tabs since they drive all of them.
+# metrics moved into the sidebar (Day 26) since they drive all of them.
 # Day 24: Conjunction Screening added as its own tab, placed right after
 # Next Passes rather than at the end -- it continues the same asset-focused
 # question sequence (where/what/when/is-it-safe) that Map through Passes
