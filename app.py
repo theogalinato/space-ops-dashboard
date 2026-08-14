@@ -1,12 +1,22 @@
 import streamlit as st
 import pandas as pd
-from satellite_data import ts, load_tle_group, compute_subpoints, compute_orbital_params, classify_orbit_regime
+from satellite_data import (
+    ts,
+    load_tle_group,
+    compute_subpoints,
+    compute_orbital_params,
+    classify_orbit_regime,
+    compute_ecef_positions,
+    compute_orbit_arc,
+)
+from earth_mesh import build_earth_sphere
 from passes import get_next_n_passes, get_static_visibility, CITIES, MIN_ELEVATION_DEG
 from catalogue import load_catalogue, get_catalogue_satellites, merge_satellite_lists
 from space_weather import get_kp_index, get_xray_flux, get_solar_wind
 from space_weather_status import classify_geomagnetic_status, classify_radio_blackout_status
 from operational_assessment import assess_geomagnetic_impact, assess_radio_blackout_impact, DISCLAIMER
 import plotly.express as px
+import plotly.graph_objects as go
 
 st.set_page_config(page_title="Space Operations Dashboard", layout="wide")
 st.title("Space Operations Dashboard")
@@ -75,6 +85,21 @@ def get_catalogue_df() -> pd.DataFrame:
     live feed, so it can never go stale within a session.
     """
     return load_catalogue()
+
+
+@st.cache_data
+def get_earth_sphere():
+    """
+    Day 21: the Earth sphere mesh (Day 18's earth_mesh.py) that backs the
+    3D globe view. cache_data, not cache_resource -- build_earth_sphere()
+    returns plain numpy arrays (they pickle fine), and there's no
+    C-extension object here the way there is for the satellite pool below.
+
+    No ttl, same reasoning as get_catalogue_df: this geometry has no time
+    dependence at all (it's a static WGS84-equatorial-radius sphere, not a
+    live computation), so it can never go stale within a session.
+    """
+    return build_earth_sphere(resolution=50)
 
 
 @st.cache_resource(ttl=TLE_TTL_SECONDS)
@@ -207,6 +232,135 @@ def live_map(satellites, selected_name):
     )
 
 
+@st.fragment(run_every=POSITION_REFRESH_SECONDS)
+def live_globe(satellites, selected_sat, selected_name, regime_filter):
+    """
+    Day 21: globe.py's Day 18/19 technique (Earth sphere + ECEF satellite
+    positions, split into LEO/MEO/GEO traces, plus an orbit arc for the
+    highlighted satellite), wired into the app as a second view alongside
+    live_map instead of staying a standalone script.
+
+    Deliberately NOT a replacement for live_map -- the Map tab now offers
+    both behind a toggle (see page body below), since the two answer
+    different operator questions: "where is this over Canadian territory"
+    (2D, live_map) versus "what does the orbital environment actually look
+    like" (3D, this function). Same POSITION_REFRESH_SECONDS cadence as
+    live_map, since it depends on the same live position computation.
+
+    regime_filter lets the LEO/MEO/GEO scale problem from Day 19's Real
+    Findings (GEO sits ~5.6x farther from Earth's center than a typical LEO
+    satellite, so no single camera makes both read at equal detail) be
+    stepped around interactively -- e.g. filter to LEO only to actually see
+    the local shell -- rather than only described in a docstring.
+    """
+    t_now = ts.now()
+    ecef_df = compute_ecef_positions(satellites, t_now)
+    subpoint_df = compute_subpoints(satellites, t_now)
+    df = ecef_df.merge(subpoint_df[["catnr", "altitude_km"]], on="catnr")
+    df["regime"] = df["altitude_km"].apply(classify_orbit_regime)
+    df = df[df["regime"].isin(regime_filter)]
+
+    ex, ey, ez = get_earth_sphere()
+
+    fig = go.Figure()
+
+    # Solid-color sphere, same as globe.py -- a textured/coastline-accurate
+    # Earth is visual polish for later, not something this view depends on.
+    fig.add_trace(go.Surface(
+        x=ex, y=ey, z=ez,
+        colorscale=[[0, "rgb(25,55,109)"], [1, "rgb(25,55,109)"]],
+        showscale=False,
+        opacity=1.0,
+        hoverinfo="skip",
+        name="Earth",
+    ))
+
+    # One trace per regime, same reasoning as globe.py: lumping LEO/MEO/GEO
+    # into one trace would hide the scale difference this view exists to
+    # show honestly.
+    _REGIME_STYLE = {
+        "LEO": dict(color="silver", size=2.5),
+        "MEO": dict(color="orange", size=4),
+        "GEO": dict(color="gold", size=5),
+    }
+    for regime, style in _REGIME_STYLE.items():
+        subset = df[df["regime"] == regime]
+        if subset.empty:
+            continue
+        fig.add_trace(go.Scatter3d(
+            x=subset["x_km"], y=subset["y_km"], z=subset["z_km"],
+            text=subset["name"],
+            mode="markers",
+            marker=dict(size=style["size"], color=style["color"], opacity=0.75),
+            name=f"{regime} ({len(subset)})",
+        ))
+
+    # Highlight + orbit arc for whichever satellite is selected up top --
+    # globe.py hardcodes RADARSAT-2 since it's a standalone proof-of-concept;
+    # here the app's own selection drives it, same as live_map's red marker.
+    # If the regime filter excludes the selected satellite's own regime, it
+    # simply won't appear -- flagged below rather than silently empty.
+    selected_row = df[df["name"] == selected_name]
+    if not selected_row.empty:
+        fig.add_trace(go.Scatter3d(
+            x=selected_row["x_km"], y=selected_row["y_km"], z=selected_row["z_km"],
+            text=[selected_name],
+            mode="markers+text",
+            textposition="top center",
+            marker=dict(size=7, color="red", symbol="diamond"),
+            name=f"{selected_name} (selected)",
+        ))
+
+        arc_df = compute_orbit_arc(selected_sat, t_now)
+        fig.add_trace(go.Scatter3d(
+            x=arc_df["x_km"], y=arc_df["y_km"], z=arc_df["z_km"],
+            mode="lines",
+            line=dict(color="red", width=3),
+            opacity=0.6,
+            name=f"{selected_name} orbit arc (1 period, ECEF)",
+            hoverinfo="skip",
+        ))
+    else:
+        st.info(
+            f"{selected_name} is outside the selected regime filter, so it "
+            f"isn't shown on this globe -- widen the filter to bring it back."
+        )
+
+    # aspectmode="data" and the camera eye vector are copied verbatim from
+    # globe.py's Day 19 finding: no single static camera makes LEO and GEO
+    # both read at equal detail (real geometry, not a framing bug), so this
+    # is a deliberately LEO/MEO-favoring starting view, not the only view --
+    # drag to rotate, scroll to zoom.
+    #
+    # uirevision is the Day 20 pattern applied to a 3D scene instead of a 2D
+    # scattergeo: without it, the user's rotate/zoom would reset to this
+    # default every POSITION_REFRESH_SECONDS.
+    fig.update_layout(
+        scene=dict(
+            aspectmode="data",
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+            zaxis=dict(visible=False),
+            camera=dict(
+                eye=dict(x=1.05, y=1.05, z=0.75),
+                up=dict(x=0, y=0, z=1),
+            ),
+        ),
+        legend=dict(itemsizing="constant"),
+        uirevision="satellite-globe",
+        margin=dict(l=0, r=0, t=10, b=0),
+    )
+
+    st.plotly_chart(fig, key="live_globe_chart")
+    st.caption(
+        f"{len(df)} of {len(satellites)} tracked objects shown (regime filter "
+        f"below). Positions recomputed every {POSITION_REFRESH_SECONDS} s from "
+        f"TLEs cached up to {TLE_TTL_SECONDS // 3600} h. As of "
+        f"{t_now.utc_strftime('%H:%M:%S')} UTC. Earth is a WGS84-equatorial-"
+        f"radius sphere, not a true oblate spheroid -- see earth_mesh.py."
+    )
+
+
 @st.fragment(run_every=SWPC_REFRESH_SECONDS)
 def live_space_weather():
     """
@@ -310,12 +464,27 @@ def live_space_weather():
     st.line_chart(kp_df.set_index("time_utc")["estimated_kp"])
 
     st.subheader("GOES X-ray flux, long channel (0.1-0.8nm)")
-    st.line_chart(xray_df.set_index("time_utc")["flux_w_m2"])
+    # Day 21: log scale, fixing the Day 15 flag. st.line_chart can't set
+    # axis scale at all, which is why this one chart is a Plotly figure
+    # (px.line) while the other space-weather charts below stay
+    # st.line_chart -- Kp, solar wind speed/density, and Bz don't span
+    # orders of magnitude the way flux does (A-class to X-class flux
+    # covers roughly 1e-8 to 1e-3 W/m^2), so linear is still the honest
+    # read for those.
+    xray_fig = px.line(xray_df, x="time_utc", y="flux_w_m2")
+    xray_fig.update_yaxes(type="log", title="Flux (W/m^2, log scale)")
+    xray_fig.update_xaxes(title="Time (UTC)")
+    xray_fig.update_layout(
+        showlegend=False,
+        margin=dict(l=0, r=0, t=10, b=0),
+        uirevision="xray-flux-chart",
+    )
+    st.plotly_chart(xray_fig, key="xray_flux_chart")
     st.caption(
-        "Linear scale for Day 15. X-ray flux spans several orders of "
-        "magnitude across flare classes, so a log-scale axis will "
-        "likely read better once this tab gets more attention later; "
-        "flagged here rather than fixed today."
+        "Log scale, fixed Day 21. X-ray flux spans several orders of "
+        "magnitude across flare classes (A/B/C/M/X) -- on the linear scale "
+        "shipped Day 15, everything below an X-class flare compressed into "
+        "a flat line near zero."
     )
 
     st.subheader("Solar wind speed")
@@ -397,7 +566,42 @@ map_tab, catalogue_tab, passes_tab, weather_tab = st.tabs(
 )
 
 with map_tab:
-    live_map(satellites, selected_name)
+    # Day 21: 2D/3D toggle rather than replacing the flat map, per the
+    # decision recorded going into Day 20 -- the two views answer different
+    # operator questions ("where is this over Canadian territory" vs. "what
+    # does the orbital environment actually look like") and a toggle keeps
+    # the tab count at four while only building one figure per render.
+    view_mode = st.radio(
+        "View",
+        ["2D Map", "3D Globe"],
+        horizontal=True,
+        help=(
+            "2D is the flat scattergeo projection (Day 4), best for reading "
+            "positions against Canadian geography. 3D is the ECEF globe "
+            "(Day 18-19), best for seeing true altitude and the LEO/MEO/GEO "
+            "scale difference -- neither replaces the other."
+        ),
+    )
+
+    if view_mode == "2D Map":
+        live_map(satellites, selected_name)
+    else:
+        regime_options = ["LEO", "MEO", "GEO"]
+        selected_regimes = st.multiselect(
+            "Orbit regime",
+            regime_options,
+            default=regime_options,
+            help=(
+                "GEO sits roughly 5.6x farther from Earth's center than a "
+                "typical LEO satellite (Day 19 finding) -- no single camera "
+                "view makes both read at equal detail, so filtering to one "
+                "regime is often more useful than the default drag/zoom."
+            ),
+        )
+        if not selected_regimes:
+            st.warning("Select at least one orbit regime to render the globe.")
+        else:
+            live_globe(satellites, selected_sat, selected_name, tuple(selected_regimes))
 
 # ============================================================
 # Day 12: Canadian asset catalogue -- filterable reference table.
