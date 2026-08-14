@@ -23,6 +23,7 @@ from math import pi
 
 import pandas as pd
 from skyfield.api import EarthSatellite, load, wgs84
+from skyfield.framelib import itrs
 
 ts = load.timescale()
 
@@ -148,6 +149,48 @@ def compute_ground_track(
             "altitude_km": subpoint.elevation.km,
         }
     )
+
+
+def compute_ecef_positions(satellites: list[EarthSatellite], t) -> pd.DataFrame:
+    """
+    Snapshot: Earth-Centered Earth-Fixed (ECEF) x/y/z position in km for
+    MANY satellites at ONE instant t. Day 18's ECI-to-ECEF conversion.
+
+    sat.at(t) (used everywhere else in this module) returns a geocentric
+    position in Skyfield's GCRS frame -- an INERTIAL frame (fixed relative
+    to the stars, not the ground) sometimes loosely called ECI. That's the
+    correct frame for orbital mechanics, but it is the WRONG frame to plot
+    next to a solid Earth model whose continents sit at fixed lat/lon:
+    GCRS doesn't rotate with the planet, so raw GCRS x/y/z plotted against
+    a fixed-continent sphere would show the continents visibly drifting
+    under the satellites as the Earth turns beneath the inertial frame.
+
+    geocentric.frame_xyz(itrs) reprojects the same physical position into
+    ITRS (International Terrestrial Reference System) -- the Earth-fixed
+    frame that rotates with the planet, i.e. ECEF. This is exactly the
+    frame wgs84.subpoint() already uses internally to derive lat/lon/
+    altitude elsewhere in this module; a satellite's ITRS x/y/z and its
+    wgs84 subpoint describe the same point two different ways (Cartesian
+    vs. geodetic). test_globe.py round-trips through both and checks they
+    agree, including accounting for the small, expected geodetic-vs-
+    geocentric latitude gap that WGS84's ellipsoid (not a sphere) causes.
+
+    Returns a DataFrame with columns: name, catnr, x_km, y_km, z_km.
+    """
+    rows = []
+    for sat in satellites:
+        geocentric = sat.at(t)
+        x, y, z = geocentric.frame_xyz(itrs).km
+        rows.append(
+            {
+                "name": sat.name,
+                "catnr": sat.model.satnum,
+                "x_km": x,
+                "y_km": y,
+                "z_km": z,
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def compute_orbital_params(sat: EarthSatellite, t) -> dict:
