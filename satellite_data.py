@@ -1,110 +1,109 @@
 from __future__ import annotations
 
-from datetime import timedelta
+import json
+import os
+from datetime import datetime, timedelta, timezone
 from math import pi
 
 import pandas as pd
-import requests
 from skyfield.api import EarthSatellite, load, wgs84
 from skyfield.framelib import itrs
 from skyfield.iokit import parse_tle_file
 
 ts = load.timescale()
 
-CELESTRAK_GROUP_URL = "https://celestrak.org/NORAD/elements/gp.php?GROUP={group}&FORMAT=tle"
-CELESTRAK_CATNR_URL = "https://celestrak.org/NORAD/elements/gp.php?CATNR={catnr}&FORMAT=tle"
-
-# --- Deploy fix (post-v1.0): fetch TLEs with `requests` instead of
-# Skyfield's built-in `load.tle_file()` downloader. -----------------------
+# --- v1.1: demo build, fixed data snapshot, no live network calls. -------
 #
-# On Streamlit Community Cloud, `get_satellite_pool()` crashed at startup
-# with a bare, Streamlit-redacted OSError inside Skyfield's `download()`.
-# Tracing it (Skyfield 1.55's `skyfield/iokit.py`) showed the failure was
-# specifically the `urlopen(...)` call to CelesTrak failing and getting
-# wrapped as `IOError('cannot download {url} because {e}')` -- a NETWORK
-# failure, not (as first suspected) a read-only-working-directory problem.
-# Streamlit deliberately redacts OSError/IOError text in the deployed UI
-# (they can leak local filesystem details), which is exactly why the app
-# showed a generic "error redacted" banner instead of the real reason --
-# the real message only ever reached the Cloud "Manage app" logs.
+# Earlier attempts (round 1: fetch via `requests` with a real User-Agent
+# and timeout instead of Skyfield's own downloader; round 2: fall back to
+# a periodically-refreshed local cache when the live fetch fails) both
+# ran into the same underlying wall: deployed on two independent hosts
+# (Streamlit Community Cloud on GCP, Render on AWS), the live request to
+# celestrak.org fails at the TCP connect stage -- a 15s timeout, no
+# response -- while the identical request from a home network succeeds
+# every time. That's consistent with celestrak.org (a small,
+# volunteer/nonprofit-run service) being unreliably reachable from
+# cloud/datacenter-originated network paths specifically, not a bug in
+# how this app asks for data.
 #
-# Two independent things about Skyfield's built-in downloader are worth
-# fixing regardless of which one actually caused this specific crash:
-#   1. It sends Python's generic default User-Agent header on every
-#      request. Some public data hosts (CelesTrak included, at times)
-#      quietly reject or rate-limit generic scripted User-Agents.
-#   2. It sets no request timeout at all -- a slow/unresponsive CelesTrak
-#      response would hang the whole Streamlit worker rather than fail.
-#
-# It also caches every download to a file written next to the app's own
-# code, which assumes a writable working directory -- not guaranteed on
-# every hosting platform, and not needed here anyway: `get_satellite_pool()`
-# in app.py is already `@st.cache_resource(ttl=TLE_TTL_SECONDS)`, so
-# per-rerun freshness is already handled at the Streamlit layer. Fetching
-# with `requests` (already a project dependency) and handing the raw bytes
-# to Skyfield's own `parse_tle_file()` keeps the exact same EarthSatellite
-# output, adds a real User-Agent and timeout, and never touches disk.
-_REQUEST_HEADERS = {
-    "User-Agent": (
-        "space-ops-dashboard/1.0 (educational SDA project; "
-        "https://github.com/theogalinato/space-ops-dashboard)"
-    )
-}
-_REQUEST_TIMEOUT_SECONDS = 15
+# Decision: rather than ship an app that silently degrades over time as
+# an unmaintained cache goes stale, this build is explicitly a DEMO --
+# it always loads from a single fixed data snapshot captured once (see
+# `capture_demo_snapshot.py`) and bundled into the repo under
+# `data/demo_snapshot/`. There is no live-fetch attempt anywhere in this
+# module, on purpose: identical behavior locally and deployed, zero
+# network dependency for TLE data, and an honest, permanent "this is a
+# snapshot from [date], not live-tracked" banner in the UI (see app.py)
+# instead of a fallback that pretends to be temporary. If celestrak.org
+# ever becomes reliably reachable from these hosts, or the project moves
+# to a host where it is, re-enabling a live path is straightforward --
+# see the git history for the round-1/round-2 versions of this file.
+_SNAPSHOT_DIR = "data/demo_snapshot"
+_SNAPSHOT_MANIFEST_PATH = os.path.join(_SNAPSHOT_DIR, "manifest.json")
 
 
-def _fetch_tle_lines(url: str) -> list[EarthSatellite]:
+def _read_snapshot_manifest() -> dict:
+    if not os.path.exists(_SNAPSHOT_MANIFEST_PATH):
+        return {}
+    with open(_SNAPSHOT_MANIFEST_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _load_snapshot_group(group: str) -> list[EarthSatellite]:
     """
-    Fetch a CelesTrak TLE URL over HTTP and parse it into EarthSatellite
-    objects, bypassing Skyfield's own disk-caching downloader entirely.
-
-    Raises a plain RuntimeError (never an OSError/IOError) on failure.
-    That's deliberate: Streamlit Cloud redacts OSError/IOError details
-    from the deployed app's UI by design, which is exactly why a network
-    hiccup here used to surface as an opaque "error redacted" banner
-    instead of a real message. RuntimeError isn't special-cased, so the
-    actual reason now shows up directly in the app, not just in logs.
+    Load a TLE group from the bundled demo snapshot at
+    data/demo_snapshot/{group}.tle. Raises RuntimeError with a clear,
+    actionable message if the snapshot is missing -- that's a real setup
+    problem (repo cloned without running capture_demo_snapshot.py, or
+    data/demo_snapshot/ excluded by .gitignore), not something to fall
+    back from silently.
     """
-    try:
-        response = requests.get(
-            url, headers=_REQUEST_HEADERS, timeout=_REQUEST_TIMEOUT_SECONDS
-        )
-        response.raise_for_status()
-    except requests.exceptions.RequestException as exc:
+    manifest = _read_snapshot_manifest()
+    entry = manifest.get(group)
+    snapshot_file = os.path.join(_SNAPSHOT_DIR, f"{group}.tle")
+
+    if entry is None or not os.path.exists(snapshot_file):
         raise RuntimeError(
-            f"Could not fetch TLE data from CelesTrak ({url}): {exc}. "
-            f"CelesTrak may be temporarily unavailable -- try again in a "
-            f"moment; if it persists, check https://celestrak.org directly."
-        ) from exc
+            f"No demo snapshot found for group '{group}' at {snapshot_file}. "
+            f"Run `python capture_demo_snapshot.py` once from a machine "
+            f"that can reach CelesTrak, then commit data/demo_snapshot/."
+        )
 
-    satellites = list(parse_tle_file(response.iter_lines(), ts))
+    with open(snapshot_file, "rb") as f:
+        satellites = list(parse_tle_file(f, ts))
+
     if not satellites:
         raise RuntimeError(
-            f"CelesTrak returned no parseable TLE data for {url}. "
-            f"The group name or catalog number may be wrong, or "
-            f"CelesTrak's response format may have changed."
+            f"{snapshot_file} exists but contains no parseable TLEs. "
+            f"Re-run capture_demo_snapshot.py to regenerate it."
         )
     return satellites
 
 
+def get_snapshot_info(group: str) -> dict | None:
+    """
+    Metadata about the bundled snapshot for `group`, for app.py's demo
+    banner: {"captured_at": ISO string, "age_days": float}. Returns None
+    if this group was never captured (manifest has no entry for it).
+    """
+    manifest = _read_snapshot_manifest()
+    entry = manifest.get(group)
+    if entry is None:
+        return None
+    captured_at = datetime.fromisoformat(entry["fetched_at"])
+    age_days = (datetime.now(timezone.utc) - captured_at).total_seconds() / 86400.0
+    return {"captured_at": entry["fetched_at"], "age_days": age_days}
+
+
 def load_tle_group(group: str = "visual", reload: bool = False) -> list[EarthSatellite]:
     """
-    Load a TLE group from CelesTrak.
-
-    Parameters
-    ----------
-    group : CelesTrak group name, e.g. "visual", "active", "stations".
-    reload : accepted for backward compatibility with existing call sites,
-        but no longer changes behavior. It used to force past Skyfield's
-        on-disk TLE cache (the original Day 4 lesson lived here: an
-        interrupted download could leave a truncated cache file that
-        loaded "successfully" with the wrong satellite count and no
-        error). That on-disk cache is gone -- see the module-level
-        comment above `_fetch_tle_lines` -- so every call already fetches
-        fresh from CelesTrak; there's nothing left for `reload` to force.
+    Load a TLE group. This build always reads from the bundled demo
+    snapshot -- see the module comment above for why there's no live
+    fetch here. `reload` is accepted for backward compatibility with
+    existing call sites but has no effect (there's no live source to
+    reload from).
     """
-    url = CELESTRAK_GROUP_URL.format(group=group)
-    return _fetch_tle_lines(url)
+    return _load_snapshot_group(group)
 
 
 def get_satellite_by_catnr(
@@ -116,37 +115,38 @@ def get_satellite_by_catnr(
     """
     Look up one satellite by NORAD catalog number.
 
-    Pass in an already-loaded `satellites` list to search it first and
-    avoid a second network fetch when possible (e.g. plot_map.py's own
-    satellite happens to be a member of the group it already loaded for
-    the map). If not found there -- or if `satellites` is None -- falls
-    back to a direct CATNR-specific CelesTrak query.
+    Pass in an already-loaded `satellites` list to search it first (e.g.
+    plot_map.py's own satellite happens to be a member of the group it
+    already loaded for the map). If not found there -- or if `satellites`
+    is None -- falls back to the dedicated `catalogue` demo snapshot,
+    which capture_demo_snapshot.py builds by fetching every Canadian
+    catalogue satellite's CATNR directly, specifically so this lookup
+    never depends on whether a given satellite happens to be a member of
+    'visual' or 'active' (RADARSAT-2, for example, is not a member of
+    CelesTrak's 'visual' group even though it's visually trackable in
+    this app's map -- that's a fact about CelesTrak's own group curation,
+    not a bug, and the dedicated catalogue snapshot exists to not depend
+    on it).
 
-    Note: not every satellite of interest belongs to every named group.
-    RADARSAT-2, for example, is NOT in CelesTrak's "visual" group, even
-    though it's visually trackable in the "visual" map's context -- that's
-    a fact about how CelesTrak curates that particular group, not a bug.
-    The CATNR fallback exists specifically for cases like this.
-
-    `reload` is accepted for backward compatibility but no longer changes
-    behavior -- see `load_tle_group`'s docstring for why.
+    `reload` is accepted for backward compatibility but has no effect --
+    see `load_tle_group`'s docstring for why.
     """
     if satellites is not None:
         by_catnr = {sat.model.satnum: sat for sat in satellites}
         if catnr in by_catnr:
             return by_catnr[catnr]
 
-    # Not found in the provided group (or none was provided) -- fetch
-    # this specific satellite directly by its NORAD catalog number.
-    url = CELESTRAK_CATNR_URL.format(catnr=catnr)
-    direct_result = _fetch_tle_lines(url)
-    if not direct_result:
-        raise KeyError(
-            f"NORAD catalog number {catnr} not found -- not in group "
-            f"'{group}', and the direct CATNR query returned nothing. "
-            f"Check the catalog number is correct."
-        )
-    return direct_result[0]
+    catalogue_sats = _load_snapshot_group("catalogue")
+    by_catnr = {sat.model.satnum: sat for sat in catalogue_sats}
+    if catnr in by_catnr:
+        return by_catnr[catnr]
+
+    raise KeyError(
+        f"NORAD catalog number {catnr} not found -- not in group "
+        f"'{group}', and not in the dedicated catalogue demo snapshot "
+        f"either. If this is a newly-added catalogue satellite, re-run "
+        f"capture_demo_snapshot.py to pick it up."
+    )
 
 
 def compute_subpoints(satellites: list[EarthSatellite], t) -> pd.DataFrame:

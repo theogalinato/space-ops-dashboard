@@ -42,6 +42,7 @@ from satellite_data import (
     classify_orbit_regime,
     compute_ecef_positions,
     compute_orbit_arc,
+    get_snapshot_info,
 )
 from earth_mesh import build_earth_sphere, build_coastlines
 from passes import get_next_n_passes, get_static_visibility, CITIES, MIN_ELEVATION_DEG
@@ -802,8 +803,29 @@ def live_space_weather():
 # catalogue satellites (none of which are members of 'visual' -- confirmed
 # on Day 12). Day 20: both loads now go through the cached accessors above
 # rather than hitting the network on every page load.
-satellites = get_satellite_pool()
-catalogue_df = get_catalogue_df()
+#
+# v1.1: this build always loads from a fixed demo data snapshot (see
+# satellite_data.py's module-level comment for why) rather than live
+# CelesTrak data, so get_satellite_pool() can now only fail if that
+# snapshot is missing or unreadable -- a setup problem, not a network
+# flake -- which is what the except branch below actually reports.
+try:
+    satellites = get_satellite_pool()
+    catalogue_df = get_catalogue_df()
+except RuntimeError as exc:
+    st.error(f"Demo data snapshot is missing or unreadable.\n\n{exc}")
+    st.stop()
+
+_snapshot_info = get_snapshot_info("visual")
+if _snapshot_info is not None:
+    st.info(
+        f"Demo build — satellite positions are propagated from a fixed data "
+        f"snapshot captured on {_snapshot_info['captured_at'][:10]} "
+        f"({_snapshot_info['age_days']:.0f} days ago), not live-tracked. "
+        f"celestrak.org isn't reliably reachable from this host; see the "
+        f"README for why. Position accuracy for low-Earth-orbit objects "
+        f"degrades the older this snapshot gets."
+    )
 
 # Day 19: classify_orbit_regime moved to satellite_data.py so globe.py can
 # share the exact same LEO/MEO/GEO thresholds instead of a second copy

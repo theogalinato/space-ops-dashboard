@@ -1,7 +1,6 @@
 venv/
 __pycache__/
-cat >> .gitignore << 'EOF'
 *.tle
+!data/demo_snapshot/*.tle
 *.html
 gp.php
-EOF
