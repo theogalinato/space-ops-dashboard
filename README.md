@@ -1,5 +1,5 @@
 # Space Operations Dashboard
-![alt text](<Screenshot 2026-08-15 024530-1.png>)
+![Dashboard 3D globe view](docs/screenshots/dashboard.png)
 A public-data space domain awareness tool: a Streamlit dashboard that turns live satellite tracking, pass prediction, space weather, a Canadian space-asset catalogue, and reduced conjunction screening into a single operator-facing view of "what is happening in the space domain right now, and how can someone reading this understand it quickly." Built as a 28-day solo project by a mechanical engineering student, to demonstrate space-operations thinking (data to system to environment to operational impact), not just coding.
 
 ## What this is, and isn't
