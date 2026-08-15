@@ -43,7 +43,7 @@ from satellite_data import (
     compute_ecef_positions,
     compute_orbit_arc,
 )
-from earth_mesh import build_earth_sphere
+from earth_mesh import build_earth_sphere, build_coastlines
 from passes import get_next_n_passes, get_static_visibility, CITIES, MIN_ELEVATION_DEG
 from catalogue import load_catalogue, get_catalogue_satellites, merge_satellite_lists
 from space_weather import get_kp_index, get_xray_flux, get_solar_wind
@@ -177,6 +177,20 @@ def get_earth_sphere():
     return build_earth_sphere(resolution=50)
 
 
+@st.cache_data
+def get_coastlines():
+    """
+    Day 27: the bundled coastline outline data (earth_mesh.py's
+    build_coastlines(), Natural Earth 110m, no network dependency) for the
+    3D globe. Same reasoning as get_earth_sphere just above -- this is
+    static geometry with no time dependence, parsed from a file that ships
+    in the repo, so there's no reason to re-parse and re-project ~5,000
+    points on every live_globe refresh tick when the result never changes
+    within a session.
+    """
+    return build_coastlines()
+
+
 @st.cache_resource(ttl=TLE_TTL_SECONDS)
 def get_satellite_pool() -> list:
     """
@@ -291,16 +305,20 @@ def live_map(satellites, selected_name):
     # that happen to both be called "default."
     fig.update_traces(marker=dict(color="#3987e5", size=5))
 
-    # Day 26: white, not red -- red is reserved app-wide for HIGH/critical
-    # risk (Space Weather since Day 16, Conjunction Screening since Day
-    # 24). Same reasoning as the matching fix in live_globe/globe.py.
+    # Day 27: back to red, by request, after Day 26 had briefly moved this
+    # to white over a concern about colliding with red's HIGH/critical
+    # status meaning elsewhere. Red is also simply more reliable here
+    # across both the light and dark themes Day 27 brought back -- a white
+    # marker on the (now possible) light theme's near-white background was
+    # verified nearly invisible, where red reads clearly against light,
+    # dark, and the navy globe sphere alike.
     selected_row = df[df["name"] == selected_name]
     fig.add_scattergeo(
         lat=selected_row["latitude_deg"],
         lon=selected_row["longitude_deg"],
         text=selected_row["name"],
         mode="markers",
-        marker=dict(size=14, color="#ffffff"),
+        marker=dict(size=14, color="red"),
         name="Selected",
     )
 
@@ -375,11 +393,14 @@ def live_globe(satellites, selected_sat, selected_name, regime_filter):
     df = df[df["regime"].isin(regime_filter)]
 
     ex, ey, ez = get_earth_sphere()
+    coast_x, coast_y, coast_z = get_coastlines()
 
     fig = go.Figure()
 
-    # Solid-color sphere, same as globe.py -- a textured/coastline-accurate
-    # Earth is visual polish for later, not something this view depends on.
+    # Solid-color sphere, same as globe.py -- a full photographic texture
+    # is real extra machinery (Plotly's indexed-colorscale trick) for a
+    # look that's mostly visual polish; coastline outlines just below get
+    # most of the "recognizable planet" benefit for far less effort.
     fig.add_trace(go.Surface(
         x=ex, y=ey, z=ez,
         colorscale=[[0, "rgb(25,55,109)"], [1, "rgb(25,55,109)"]],
@@ -389,21 +410,44 @@ def live_globe(satellites, selected_sat, selected_name, regime_filter):
         name="Earth",
     ))
 
+    # Day 27: coastline outlines -- see globe.py's matching comment and
+    # earth_mesh.py's build_coastlines() for the full reasoning (bundled
+    # Natural Earth data, no network dependency, deliberately using the
+    # sphere's own simplified-sphere formula so the lines land exactly on
+    # this sphere rather than up to ~21 km off it).
+    fig.add_trace(go.Scatter3d(
+        x=coast_x, y=coast_y, z=coast_z,
+        mode="lines",
+        line=dict(color="rgb(150,165,190)", width=1.5),
+        opacity=0.9,
+        hoverinfo="skip",
+        name="Coastlines",
+        showlegend=False,
+    ))
+
     # One trace per regime, same reasoning as globe.py: lumping LEO/MEO/GEO
     # into one trace would hide the scale difference this view exists to
     # show honestly.
     #
     # Day 26: colors kept in sync with globe.py's own _REGIME_STYLE -- see
     # that file's comment for the full reasoning (orange/gold failed a
-    # colorblind + contrast validator's plain normal-vision check, d95926/
-    # 199e70 is a validated replacement; silver stays for LEO as a
-    # deliberate, render-and-checked exception, not an oversight). Two
-    # copies of this dict exist on purpose (globe.py stays a standalone,
-    # Streamlit-free proof-of-concept per Day 21's own note below) -- keep
-    # them matching by hand if either changes.
+    # colorblind + contrast validator's plain normal-vision check; silver
+    # stays for LEO as a deliberate, render-and-checked exception, not an
+    # oversight). Two copies of this dict exist on purpose (globe.py stays
+    # a standalone, Streamlit-free proof-of-concept per Day 21's own note
+    # below) -- keep them matching by hand if either changes.
+    #
+    # Day 27: MEO moved from Day 26's #d95926 (a validated orange) to
+    # blue. Not a validator failure this time -- it passed every real
+    # check -- but a real-world one: at marker size and a glance, that
+    # orange read close enough to red to raise a mix-up concern once red
+    # went back to meaning "selected" (see below). Blue reuses the exact
+    # hex already used for "the general population" on the 2D map, and
+    # re-validated cleanly against silver/aqua in both the light and dark
+    # themes Day 27 brought back (all-pairs check, both surfaces).
     _REGIME_STYLE = {
         "LEO": dict(color="silver", size=2.5),
-        "MEO": dict(color="#d95926", size=4),
+        "MEO": dict(color="#3987e5", size=4),
         "GEO": dict(color="#199e70", size=5),
     }
     for regime, style in _REGIME_STYLE.items():
@@ -424,10 +468,10 @@ def live_globe(satellites, selected_sat, selected_name, regime_filter):
     # If the regime filter excludes the selected satellite's own regime, it
     # simply won't appear -- flagged below rather than silently empty.
     #
-    # Day 26: white, not red -- red is reserved app-wide for HIGH/critical
-    # risk (Space Weather since Day 16, Conjunction Screening since Day
-    # 24), so using it here too meant a selected satellite could get
-    # misread as "dangerous" rather than just "the one you clicked."
+    # Day 27: back to red, by request. See live_map's matching comment --
+    # red is also just more reliable across both themes than white turned
+    # out to be (verified nearly invisible against the light theme's
+    # near-white page).
     selected_row = df[df["name"] == selected_name]
     if not selected_row.empty:
         fig.add_trace(go.Scatter3d(
@@ -435,7 +479,7 @@ def live_globe(satellites, selected_sat, selected_name, regime_filter):
             text=[selected_name],
             mode="markers+text",
             textposition="top center",
-            marker=dict(size=7, color="#ffffff", symbol="diamond"),
+            marker=dict(size=7, color="red", symbol="diamond"),
             name=f"{selected_name} (selected)",
         ))
 
@@ -443,7 +487,7 @@ def live_globe(satellites, selected_sat, selected_name, regime_filter):
         fig.add_trace(go.Scatter3d(
             x=arc_df["x_km"], y=arc_df["y_km"], z=arc_df["z_km"],
             mode="lines",
-            line=dict(color="#ffffff", width=3),
+            line=dict(color="red", width=3),
             opacity=0.6,
             name=f"{selected_name} orbit arc (1 period, ECEF)",
             hoverinfo="skip",
@@ -785,16 +829,13 @@ names = [sat.name for sat in satellites]
 with st.sidebar:
     st.header("Satellite Tracking")
 
-    search_term = st.text_input("Search satellites", "")
-    if search_term:
-        filtered_names = [n for n in names if search_term.lower() in n.lower()]
-    else:
-        filtered_names = names
-    if not filtered_names:
-        st.warning(f"No satellites in the 'visual' group match '{search_term}'.")
-        st.stop()
-
-    selected_name = st.selectbox("Select a satellite", filtered_names)
+    # Day 27: the standalone "Search satellites" text input was removed.
+    # It was pre-filtering the dropdown's option list, but st.selectbox's
+    # own dropdown already supports typing to filter its options once it's
+    # open (a plain browser combobox behavior, not something this app
+    # built) -- so the text input was a second, separate control doing a
+    # job the selectbox already does on its own. One control, not two.
+    selected_name = st.selectbox("Select a satellite", names)
     selected_sat = next(sat for sat in satellites if sat.name == selected_name)
 
     st.write(f"Tracking: **{selected_sat.name}** (NORAD {selected_sat.model.satnum})")
@@ -854,20 +895,37 @@ with map_tab:
     # operator questions ("where is this over Canadian territory" vs. "what
     # does the orbital environment actually look like") and a toggle keeps
     # the tab count at four while only building one figure per render.
+    #
+    # Day 27: the toggle and the regime filter moved BELOW the chart, and
+    # 3D Globe is now the default view. Streamlit executes top-to-bottom,
+    # so putting the widgets below the chart they control needs a
+    # placeholder: `chart_slot` reserves the chart's position in the page
+    # first, the controls render (and are read) further down the script as
+    # normal, and the chart is drawn into that same reserved slot last --
+    # so on screen it still appears above the controls, even though the
+    # code that decides its content runs after them. The live_map/
+    # live_globe fragments' own `run_every` auto-refresh was verified to
+    # keep redrawing into that same slot correctly across multiple ticks,
+    # not just on first load, before shipping this.
+    chart_slot = st.empty()
+
     view_mode = st.radio(
         "View",
-        ["2D Map", "3D Globe"],
+        ["3D Globe", "2D Map"],
+        index=0,
         horizontal=True,
         help=(
-            "2D is the flat scattergeo projection (Day 4), best for reading "
-            "positions against Canadian geography. 3D is the ECEF globe "
-            "(Day 18-19), best for seeing true altitude and the LEO/MEO/GEO "
-            "scale difference -- neither replaces the other."
+            "3D is the ECEF globe (Day 18-19), best for seeing true "
+            "altitude and the LEO/MEO/GEO scale difference -- the default "
+            "view. 2D is the flat scattergeo projection (Day 4), best for "
+            "reading positions against Canadian geography. Neither "
+            "replaces the other."
         ),
     )
 
     if view_mode == "2D Map":
-        live_map(satellites, selected_name)
+        with chart_slot.container():
+            live_map(satellites, selected_name)
     else:
         regime_options = ["LEO", "MEO", "GEO"]
         selected_regimes = st.multiselect(
@@ -881,10 +939,11 @@ with map_tab:
                 "regime is often more useful than the default drag/zoom."
             ),
         )
-        if not selected_regimes:
-            st.warning("Select at least one orbit regime to render the globe.")
-        else:
-            live_globe(satellites, selected_sat, selected_name, tuple(selected_regimes))
+        with chart_slot.container():
+            if not selected_regimes:
+                st.warning("Select at least one orbit regime to render the globe.")
+            else:
+                live_globe(satellites, selected_sat, selected_name, tuple(selected_regimes))
 
 # ============================================================
 # Day 12: Canadian asset catalogue -- filterable reference table.

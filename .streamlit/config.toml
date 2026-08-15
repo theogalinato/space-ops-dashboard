@@ -1,27 +1,46 @@
-# Day 26: deliberate dark theme rather than Streamlit's light default.
+# Day 27: separate [theme.dark] and [theme.light] sections (Streamlit 1.61
+# supports this) instead of a single fixed [theme]. Defining BOTH re-enables
+# Streamlit's own built-in System/Light/Dark switcher in the app's top-right
+# menu -- confirmed by actually launching the app and clicking it, not
+# assumed from docs -- so this brings back day/night switching without any
+# custom toggle code in app.py. The default selection is "System," verified
+# (via Playwright's color-scheme emulation, both ways) to genuinely follow
+# the viewer's actual OS/browser preference rather than always starting on
+# one side -- the explicit Light/Dark buttons are there for a viewer who
+# wants to override that. `base` (below) is Streamlit's fallback for
+# properties left unset in [theme.light]/[theme.dark]; since both are
+# fully specified here, it has little practical effect -- kept at "dark"
+# as a reasonable fallback rather than removed, not because it was
+# confirmed to change the app's actual starting appearance.
 #
-# Two reasons, not just taste: (1) it matches the 3D globe's dark navy
-# Earth sphere (Days 18-19) instead of fighting it inside a white page,
-# and (2) a dark, low-glare look reads as an ops/mission-control tool
-# rather than a business report, which fits what this project is for.
+# Colors on both sides are pulled from the same validated design system
+# used for the marker/globe colors elsewhere (Anthropic's dataviz skill,
+# references/palette.md) -- e.g. #3987e5/#2a78d6 are literally the dark-
+# mode/light-mode steps of the same "blue" categorical slot, not two
+# independently-chosen blues. Background/text pairs are that same
+# reference's validated light and dark chart-surface/text-primary values.
 #
-# primaryColor is the same hex as the categorical "blue" slot used for
-# the general tracked-satellite population on the 2D map and (kept
-# distinct from LEO's silver, see live_globe / globe.py) available as a
-# consistent accent color for widgets, active tab underlines, and
-# sliders -- one blue, one meaning, used consistently across the whole
-# app rather than Streamlit's default red.
-#
-# backgroundColor is the same "chart surface" dark gray the app's data-
-# viz color choices were validated against (see app.py and globe.py
-# comments on the LEO/MEO/GEO and "selected satellite" marker colors).
-# secondaryBackgroundColor is one step lighter, for the sidebar and
-# widget chrome, so they read as a distinct layer above the page
-# background rather than blending into it.
+# NOT covered by this file: the 3D globe's Earth sphere and the 2D map's
+# ocean/land colors are hardcoded hex values inside app.py/globe.py
+# (Plotly figures, not Streamlit widgets), so they do NOT automatically
+# recolor when you flip Light/Dark -- confirmed by testing both modes.
+# They were chosen to read acceptably in either mode rather than snapping
+# to a second palette per mode, which would need Streamlit to expose which
+# mode is active to server-side Python -- more machinery than this ask
+# needed. Flagged as a known simplification in the README, not silently
+# ignored.
 [theme]
 base = "dark"
+font = "sans serif"
+
+[theme.dark]
 primaryColor = "#3987e5"
 backgroundColor = "#1a1a19"
 secondaryBackgroundColor = "#242420"
 textColor = "#ffffff"
-font = "sans serif"
+
+[theme.light]
+primaryColor = "#2a78d6"
+backgroundColor = "#fcfcfb"
+secondaryBackgroundColor = "#f0efec"
+textColor = "#0b0b0b"

@@ -35,7 +35,7 @@ from satellite_data import (
     compute_orbit_arc,
     classify_orbit_regime,
 )
-from earth_mesh import build_earth_sphere
+from earth_mesh import build_earth_sphere, build_coastlines
 from catalogue import load_catalogue, get_catalogue_satellites, merge_satellite_lists
 
 import plotly.graph_objects as go
@@ -87,9 +87,11 @@ print("Building figure...")
 fig = go.Figure()
 
 # Solid-color sphere (flat colorscale, both stops the same color) rather
-# than a real texture map -- a textured/coastline-accurate Earth is a
-# visual-polish upgrade for later, not something this day's techniques
-# depend on.
+# than a real photographic texture map -- a full Blue-Marble-style texture
+# needs Plotly's fiddly indexed-colorscale trick to map an image onto a
+# Surface trace, which is real extra machinery for a look that's mostly
+# visual polish. Coastline outlines (added Day 27, right below) get most
+# of the "recognizable planet" benefit for a fraction of the effort.
 fig.add_trace(go.Surface(
     x=ex, y=ey, z=ez,
     colorscale=[[0, "rgb(25,55,109)"], [1, "rgb(25,55,109)"]],
@@ -97,6 +99,26 @@ fig.add_trace(go.Surface(
     opacity=1.0,
     hoverinfo="skip",
     name="Earth",
+))
+
+# Day 27: coastline outlines drawn on top of the sphere -- see
+# earth_mesh.py's build_coastlines() for the data source (bundled Natural
+# Earth 110m data, no network dependency) and why it uses the sphere's own
+# simplified-sphere formula rather than a geodetically "more correct" one
+# (so the lines land exactly on this sphere instead of up to ~21 km off
+# it). One trace, not one per coastline segment -- the None-separated
+# x/y/z arrays build_coastlines() returns draw every segment as its own
+# line within a single Scatter3d call, which is both simpler and faster
+# than ~130 separate trace objects.
+coast_x, coast_y, coast_z = build_coastlines()
+fig.add_trace(go.Scatter3d(
+    x=coast_x, y=coast_y, z=coast_z,
+    mode="lines",
+    line=dict(color="rgb(150,165,190)", width=1.5),
+    opacity=0.9,
+    hoverinfo="skip",
+    name="Coastlines",
+    showlegend=False,
 ))
 
 # One trace per orbit regime rather than one gray trace for everything
@@ -108,9 +130,7 @@ fig.add_trace(go.Surface(
 # through a colorblind + contrast validator (Anthropic's dataviz skill) --
 # they failed even the plain normal-vision separation check (Delta-E 12.1,
 # need >=15), meaning they were genuinely hard to tell apart, not just a
-# colorblind-accessibility gap. d95926/199e70 is a validated pair (all
-# checks pass, including the harder all-pairs test a scatter/globe view
-# needs, not just adjacent-pair). LEO's "silver" was flagged too (reads as
+# colorblind-accessibility gap. LEO's "silver" was flagged too (reads as
 # zero-chroma gray, which is real), but a render-and-look check
 # (references/dataviz's own step 7) showed silver-on-navy-sphere is the
 # single most legible combination tried for the majority category, and
@@ -118,9 +138,18 @@ fig.add_trace(go.Surface(
 # dominant category by a wide margin (typically ~95% of the tracked
 # population) with its own labeled count. Kept deliberately, not an
 # oversight.
+#
+# Day 27: MEO moved again, from Day 26's validated #d95926 orange to
+# blue. It passed every colorblind/contrast check, but at marker size and
+# a glance it read close enough to red to be a real mix-up risk once red
+# went back to meaning "selected" below (Day 26 had briefly moved that to
+# white; reverted by request, and because white also turned out nearly
+# invisible against the light theme Day 27 brought back). Blue reuses
+# app.py's own "general population" hex and re-validates cleanly against
+# silver/aqua in both the light and dark themes now available.
 _REGIME_STYLE = {
     "LEO": dict(color="silver", size=2.5),
-    "MEO": dict(color="#d95926", size=4),
+    "MEO": dict(color="#3987e5", size=4),
     "GEO": dict(color="#199e70", size=5),
 }
 for regime, style in _REGIME_STYLE.items():
@@ -135,27 +164,26 @@ for regime, style in _REGIME_STYLE.items():
         name=f"{regime} ({len(subset)})",
     ))
 
-# Day 26: highlight color moved from red to white. Red now means HIGH/
-# critical risk specifically (Space Weather tab since Day 16, Conjunction
-# Screening tab since Day 24) -- reusing it here for "this is the
-# satellite you're looking at" was a real semantic collision, not just a
-# style choice: a red diamond next to a satellite invites reading it as
-# "this one is dangerous" when it just means "selected." White reads as a
-# highlight/flag with no status meaning attached, the same role a bright
-# neutral plays in conventional ops-map symbology.
+# Day 27: back to red, by request, after Day 26's brief move to white
+# (which was itself a reasoned fix for a real collision with red's HIGH/
+# critical status meaning elsewhere -- see app.py's matching comment).
+# Red turned out more reliable in practice too: verified nearly invisible
+# against the light theme's near-white page once Day 27 brought back
+# light/dark switching, where red stays legible against light, dark, and
+# the navy sphere alike.
 fig.add_trace(go.Scatter3d(
     x=r2_df["x_km"], y=r2_df["y_km"], z=r2_df["z_km"],
     text=["RADARSAT-2"],
     mode="markers+text",
     textposition="top center",
-    marker=dict(size=7, color="#ffffff", symbol="diamond"),
+    marker=dict(size=7, color="red", symbol="diamond"),
     name="RADARSAT-2 (Canadian asset)",
 ))
 
 fig.add_trace(go.Scatter3d(
     x=arc_df["x_km"], y=arc_df["y_km"], z=arc_df["z_km"],
     mode="lines",
-    line=dict(color="#ffffff", width=3),
+    line=dict(color="red", width=3),
     opacity=0.6,
     name="RADARSAT-2 orbit arc (1 period, ECEF)",
     hoverinfo="skip",
