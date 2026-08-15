@@ -1,0 +1,14 @@
+{
+  "active": {
+    "fetched_at": "2026-08-15T17:14:21.880827+00:00",
+    "satellite_count": 16084
+  },
+  "catalogue": {
+    "fetched_at": "2026-08-15T17:14:25.509099+00:00",
+    "satellite_count": 9
+  },
+  "visual": {
+    "fetched_at": "2026-08-15T17:14:19.583932+00:00",
+    "satellite_count": 157
+  }
+}
