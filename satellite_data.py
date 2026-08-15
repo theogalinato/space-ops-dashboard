@@ -1,53 +1,110 @@
-"""
-satellite_data.py
-
-Shared TLE loading and subpoint/orbital-parameter computation for the
-Space Operations Dashboard project.
-
-Consolidates logic that was duplicated across plot_map.py (Day 4) and
-ground_track.py (Day 5):
-  - fetching/caching TLE groups from CelesTrak
-  - looking up a specific satellite by NORAD catalog number
-  - computing subpoints (lat/lon/altitude) for many satellites at one instant
-  - computing a ground track for one satellite over a time window
-  - computing orbital parameters (inclination, period, instantaneous speed)
-
-Every later day (8+, Streamlit) should import from here instead of
-re-fetching or re-deriving any of this.
-"""
-
 from __future__ import annotations
 
 from datetime import timedelta
 from math import pi
 
 import pandas as pd
+import requests
 from skyfield.api import EarthSatellite, load, wgs84
 from skyfield.framelib import itrs
+from skyfield.iokit import parse_tle_file
 
 ts = load.timescale()
 
 CELESTRAK_GROUP_URL = "https://celestrak.org/NORAD/elements/gp.php?GROUP={group}&FORMAT=tle"
 CELESTRAK_CATNR_URL = "https://celestrak.org/NORAD/elements/gp.php?CATNR={catnr}&FORMAT=tle"
 
+# --- Deploy fix (post-v1.0): fetch TLEs with `requests` instead of
+# Skyfield's built-in `load.tle_file()` downloader. -----------------------
+#
+# On Streamlit Community Cloud, `get_satellite_pool()` crashed at startup
+# with a bare, Streamlit-redacted OSError inside Skyfield's `download()`.
+# Tracing it (Skyfield 1.55's `skyfield/iokit.py`) showed the failure was
+# specifically the `urlopen(...)` call to CelesTrak failing and getting
+# wrapped as `IOError('cannot download {url} because {e}')` -- a NETWORK
+# failure, not (as first suspected) a read-only-working-directory problem.
+# Streamlit deliberately redacts OSError/IOError text in the deployed UI
+# (they can leak local filesystem details), which is exactly why the app
+# showed a generic "error redacted" banner instead of the real reason --
+# the real message only ever reached the Cloud "Manage app" logs.
+#
+# Two independent things about Skyfield's built-in downloader are worth
+# fixing regardless of which one actually caused this specific crash:
+#   1. It sends Python's generic default User-Agent header on every
+#      request. Some public data hosts (CelesTrak included, at times)
+#      quietly reject or rate-limit generic scripted User-Agents.
+#   2. It sets no request timeout at all -- a slow/unresponsive CelesTrak
+#      response would hang the whole Streamlit worker rather than fail.
+#
+# It also caches every download to a file written next to the app's own
+# code, which assumes a writable working directory -- not guaranteed on
+# every hosting platform, and not needed here anyway: `get_satellite_pool()`
+# in app.py is already `@st.cache_resource(ttl=TLE_TTL_SECONDS)`, so
+# per-rerun freshness is already handled at the Streamlit layer. Fetching
+# with `requests` (already a project dependency) and handing the raw bytes
+# to Skyfield's own `parse_tle_file()` keeps the exact same EarthSatellite
+# output, adds a real User-Agent and timeout, and never touches disk.
+_REQUEST_HEADERS = {
+    "User-Agent": (
+        "space-ops-dashboard/1.0 (educational SDA project; "
+        "https://github.com/theogalinato/space-ops-dashboard)"
+    )
+}
+_REQUEST_TIMEOUT_SECONDS = 15
+
+
+def _fetch_tle_lines(url: str) -> list[EarthSatellite]:
+    """
+    Fetch a CelesTrak TLE URL over HTTP and parse it into EarthSatellite
+    objects, bypassing Skyfield's own disk-caching downloader entirely.
+
+    Raises a plain RuntimeError (never an OSError/IOError) on failure.
+    That's deliberate: Streamlit Cloud redacts OSError/IOError details
+    from the deployed app's UI by design, which is exactly why a network
+    hiccup here used to surface as an opaque "error redacted" banner
+    instead of a real message. RuntimeError isn't special-cased, so the
+    actual reason now shows up directly in the app, not just in logs.
+    """
+    try:
+        response = requests.get(
+            url, headers=_REQUEST_HEADERS, timeout=_REQUEST_TIMEOUT_SECONDS
+        )
+        response.raise_for_status()
+    except requests.exceptions.RequestException as exc:
+        raise RuntimeError(
+            f"Could not fetch TLE data from CelesTrak ({url}): {exc}. "
+            f"CelesTrak may be temporarily unavailable -- try again in a "
+            f"moment; if it persists, check https://celestrak.org directly."
+        ) from exc
+
+    satellites = list(parse_tle_file(response.iter_lines(), ts))
+    if not satellites:
+        raise RuntimeError(
+            f"CelesTrak returned no parseable TLE data for {url}. "
+            f"The group name or catalog number may be wrong, or "
+            f"CelesTrak's response format may have changed."
+        )
+    return satellites
+
 
 def load_tle_group(group: str = "visual", reload: bool = False) -> list[EarthSatellite]:
     """
-    Load a TLE group from CelesTrak. Cached locally on disk by Skyfield's
-    `load.tle_file` as f"{group}.tle".
+    Load a TLE group from CelesTrak.
 
     Parameters
     ----------
     group : CelesTrak group name, e.g. "visual", "active", "stations".
-    reload : force a fresh download even if a local cache file exists.
-        Day 4 lesson: an interrupted download can leave a truncated cache
-        that loads "successfully" with the wrong satellite count and no
-        error. If a count looks off, reload=True first before debugging
-        anything else.
+    reload : accepted for backward compatibility with existing call sites,
+        but no longer changes behavior. It used to force past Skyfield's
+        on-disk TLE cache (the original Day 4 lesson lived here: an
+        interrupted download could leave a truncated cache file that
+        loaded "successfully" with the wrong satellite count and no
+        error). That on-disk cache is gone -- see the module-level
+        comment above `_fetch_tle_lines` -- so every call already fetches
+        fresh from CelesTrak; there's nothing left for `reload` to force.
     """
-    filename = f"{group}.tle"
     url = CELESTRAK_GROUP_URL.format(group=group)
-    return load.tle_file(url, filename=filename, reload=reload)
+    return _fetch_tle_lines(url)
 
 
 def get_satellite_by_catnr(
@@ -70,6 +127,9 @@ def get_satellite_by_catnr(
     though it's visually trackable in the "visual" map's context -- that's
     a fact about how CelesTrak curates that particular group, not a bug.
     The CATNR fallback exists specifically for cases like this.
+
+    `reload` is accepted for backward compatibility but no longer changes
+    behavior -- see `load_tle_group`'s docstring for why.
     """
     if satellites is not None:
         by_catnr = {sat.model.satnum: sat for sat in satellites}
@@ -79,8 +139,7 @@ def get_satellite_by_catnr(
     # Not found in the provided group (or none was provided) -- fetch
     # this specific satellite directly by its NORAD catalog number.
     url = CELESTRAK_CATNR_URL.format(catnr=catnr)
-    filename = f"catnr_{catnr}.tle"
-    direct_result = load.tle_file(url, filename=filename, reload=reload)
+    direct_result = _fetch_tle_lines(url)
     if not direct_result:
         raise KeyError(
             f"NORAD catalog number {catnr} not found -- not in group "
